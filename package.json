@@ -15,10 +15,19 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.53",
     "@grammyjs/conversations": "^2.1.1",
     "@grammyjs/parse-mode": "^2.3.0",
+    "@node-rs/jieba": "^2.0.1",
+    "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
+    "ai": "^6.0.164",
     "grammy": "^1.43.0",
+    "js-tiktoken": "^1.0.18",
+    "json5": "^2.2.3",
     "openai": "^6.39.0",
+    "sqlite-vec": "0.1.7-alpha.2",
+    "undici": "^8.1.0",
+    "yaml": "^2.8.3",
     "zod": "^4.4.3"
   }
 }
