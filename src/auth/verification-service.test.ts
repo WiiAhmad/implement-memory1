@@ -14,6 +14,58 @@ const identity: TelegramIdentity = {
   firstName: "Alice",
 };
 
+describe("JsonAuthStore", () => {
+  test("serializes concurrent updates so different users are not lost from JSON files", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-auth-"));
+
+    try {
+      const paths = resolveDataPaths(root);
+      await ensureRuntimeDirectories(paths);
+
+      const store = new JsonAuthStore(paths);
+      const pendingRecords = Array.from({ length: 25 }, (_, index) => ({
+        telegramUserId: `${100 + index}`,
+        username: `pending-${index}`,
+        firstName: `Pending ${index}`,
+        codeHash: `hash-${index}`,
+        issuedAt: "2026-05-22T14:00:00.000Z",
+        expiresAt: "2026-05-22T14:01:00.000Z",
+        attemptCount: index,
+      }));
+      const verifiedRecords = pendingRecords.map((record, index) => ({
+        telegramUserId: record.telegramUserId,
+        username: record.username,
+        firstName: record.firstName,
+        verifiedAt: `2026-05-22T14:10:${index.toString().padStart(2, "0")}.000Z`,
+        firstSeenAt: `2026-05-22T14:10:${index.toString().padStart(2, "0")}.000Z`,
+        lastSeenAt: `2026-05-22T14:10:${index.toString().padStart(2, "0")}.000Z`,
+      }));
+
+      await Promise.all(pendingRecords.map((record) => store.savePending(record)));
+
+      const pendingByUser = JSON.parse(
+        await readFile(paths.pendingCodesFile, "utf8"),
+      ) as Record<string, { telegramUserId: string }>;
+
+      expect(Object.keys(pendingByUser).sort()).toEqual(
+        pendingRecords.map((record) => record.telegramUserId).sort(),
+      );
+
+      await Promise.all(verifiedRecords.map((record) => store.saveVerified(record)));
+
+      const verifiedByUser = JSON.parse(
+        await readFile(paths.verifiedUsersFile, "utf8"),
+      ) as Record<string, { telegramUserId: string }>;
+
+      expect(Object.keys(verifiedByUser).sort()).toEqual(
+        verifiedRecords.map((record) => record.telegramUserId).sort(),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("VerificationService", () => {
   test("first contact issues a pending code, stores only the hash, and logs the plaintext code", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "agent-auth-"));
@@ -139,6 +191,74 @@ describe("VerificationService", () => {
       expect(logText).toContain('"code":"111111"');
       expect(logText).toContain('"code":"222222"');
       expect(JSON.stringify(result)).not.toContain("222222");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("failed issuance logging leaves no active pending code behind", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-auth-"));
+
+    try {
+      const paths = resolveDataPaths(root);
+      await ensureRuntimeDirectories(paths);
+
+      const store = new JsonAuthStore(paths);
+      const service = new VerificationService({
+        store,
+        verificationLogFile: paths.verificationLogFile,
+        generateCode: () => "777777",
+        appendLog: () => {
+          throw new Error("log write failed");
+        },
+      });
+
+      await expect(service.handleUnverifiedInput(identity, "hello")).rejects.toThrow(
+        "log write failed",
+      );
+      expect(await store.getPending(identity.telegramUserId)).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("failed verification logging leaves the user unverified and keeps the pending code", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-auth-"));
+
+    try {
+      const paths = resolveDataPaths(root);
+      await ensureRuntimeDirectories(paths);
+
+      const store = new JsonAuthStore(paths);
+      let appendCount = 0;
+      const service = new VerificationService({
+        store,
+        verificationLogFile: paths.verificationLogFile,
+        now: () => new Date("2026-05-22T14:30:00.000Z"),
+        ttlMs: 60_000,
+        generateCode: () => "888888",
+        appendLog: () => {
+          appendCount += 1;
+          if (appendCount === 2) {
+            throw new Error("log write failed");
+          }
+        },
+      });
+
+      await service.handleUnverifiedInput(identity, "hello");
+      const pendingBeforeVerification = await store.getPending(identity.telegramUserId);
+
+      await expect(service.handleUnverifiedInput(identity, "888888")).rejects.toThrow(
+        "log write failed",
+      );
+
+      const pendingAfterVerification = await store.getPending(identity.telegramUserId);
+
+      expect(await store.isVerified(identity.telegramUserId)).toBe(false);
+      expect(pendingBeforeVerification).not.toBeNull();
+      expect(pendingAfterVerification).not.toBeNull();
+      expect(pendingAfterVerification?.codeHash).toBe(pendingBeforeVerification?.codeHash);
+      expect(pendingAfterVerification?.attemptCount).toBe(pendingBeforeVerification?.attemptCount);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

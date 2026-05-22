@@ -71,8 +71,6 @@ export class VerificationService {
       lastSeenAt: timestamp,
     };
 
-    await this.options.store.saveVerified(verifiedRecord);
-    await this.options.store.deletePending(identity.telegramUserId);
     await this.appendLog(
       JSON.stringify({
         telegramUserId: identity.telegramUserId,
@@ -82,6 +80,8 @@ export class VerificationService {
         verifiedAt: timestamp,
       }),
     );
+    await this.options.store.saveVerified(verifiedRecord);
+    await this.options.store.deletePending(identity.telegramUserId);
 
     return { kind: "verified" };
   }
@@ -101,7 +101,6 @@ export class VerificationService {
       attemptCount: 0,
     };
 
-    await this.options.store.savePending(record);
     await this.appendLog(
       JSON.stringify({
         telegramUserId: identity.telegramUserId,
@@ -112,6 +111,7 @@ export class VerificationService {
         expiresAt,
       }),
     );
+    await this.options.store.savePending(record);
 
     return {
       kind: "awaiting_code",
