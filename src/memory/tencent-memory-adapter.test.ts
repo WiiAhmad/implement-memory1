@@ -20,6 +20,10 @@ describe("TencentMemoryAdapter", () => {
 
     const result = await adapter.recall("tg:user:42", "hello");
 
+    if (!call) {
+      throw new Error("Expected recall to be called");
+    }
+
     expect(call).toEqual({
       query: "hello",
       userKey: "tg:user:42",

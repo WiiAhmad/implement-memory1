@@ -15,7 +15,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.53",
+    "@ai-sdk/openai": "^3.0.65",
     "@grammyjs/conversations": "^2.1.1",
     "@grammyjs/parse-mode": "^2.3.0",
     "@node-rs/jieba": "^2.0.1",
