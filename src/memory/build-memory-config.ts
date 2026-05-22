@@ -37,7 +37,7 @@ export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
       timeoutMs: 5000,
     },
     embedding: {
-      enabled: true,
+      enabled: false,
       provider: "openai",
       baseUrl: env.embedding.baseUrl,
       apiKey: env.embedding.apiKey,

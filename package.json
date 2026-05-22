@@ -6,7 +6,8 @@
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun --watch index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "patch": "git apply patch/tencentdb-bun-sqlite.patch"
   },
   "devDependencies": {
     "@types/bun": "latest"
@@ -21,11 +22,13 @@
     "@node-rs/jieba": "^2.0.1",
     "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
     "ai": "^6.0.164",
+    "better-sqlite3": "^12.10.0",
     "grammy": "^1.43.0",
     "js-tiktoken": "^1.0.18",
     "json5": "^2.2.3",
     "openai": "^6.39.0",
-    "sqlite-vec": "0.1.7-alpha.2",
+    "sql.js": "^1.14.1",
+    "sqlite-vec": "^0.1.9",
     "undici": "^8.1.0",
     "yaml": "^2.8.3",
     "zod": "^4.4.3"
