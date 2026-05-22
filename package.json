@@ -4,8 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "bun run index.ts",
+    "start": "bun run dist/index.js",
     "dev": "bun --watch index.ts",
+    "build": "bun build index.ts --outdir dist --target bun --external node-llama-cpp",
     "test": "bun test",
     "patch": "git apply patch/tencentdb-bun-sqlite.patch"
   },

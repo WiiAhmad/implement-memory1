@@ -1,0 +1,3 @@
+[submodule "TencentDB-Agent-Memory"]
+	path = TencentDB-Agent-Memory
+	url = https://github.com/WiiAhmad/TencentDB-Agent-Memory
