@@ -19,6 +19,7 @@ export async function start(): Promise<void> {
   const verificationService = new VerificationService({
     store: authStore,
     verificationLogFile: paths.verificationLogFile,
+    logger,
   });
 
   const memory = await TencentMemoryAdapter.create(env, paths, logger);

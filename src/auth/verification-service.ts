@@ -1,5 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import type { Logger } from "../../TencentDB-Agent-Memory/src/core/types.ts";
 import type { JsonAuthStore } from "./auth-store.ts";
 import type {
   PendingVerificationRecord,
@@ -11,6 +12,7 @@ import type {
 interface VerificationServiceOptions {
   store: JsonAuthStore;
   verificationLogFile: string;
+  logger?: Pick<Logger, "info">;
   now?: () => Date;
   ttlMs?: number;
   generateCode?: () => string;
@@ -22,6 +24,7 @@ export class VerificationService {
   private readonly ttlMs: number;
   private readonly generateCode: () => string;
   private readonly appendLog: (message: string) => Promise<void> | void;
+  private readonly logger?: Pick<Logger, "info">;
 
   constructor(private readonly options: VerificationServiceOptions) {
     this.now = options.now ?? (() => new Date());
@@ -30,6 +33,7 @@ export class VerificationService {
     this.appendLog =
       options.appendLog ??
       ((message: string) => appendFile(options.verificationLogFile, `${message}\n`, "utf8"));
+    this.logger = options.logger;
   }
 
   async isVerified(telegramUserId: string): Promise<boolean> {
@@ -71,15 +75,15 @@ export class VerificationService {
       lastSeenAt: timestamp,
     };
 
-    await this.appendLog(
-      JSON.stringify({
-        telegramUserId: identity.telegramUserId,
-        username: identity.username,
-        firstName: identity.firstName,
-        code: input,
-        verifiedAt: timestamp,
-      }),
-    );
+    const verificationEntry = JSON.stringify({
+      telegramUserId: identity.telegramUserId,
+      username: identity.username,
+      firstName: identity.firstName,
+      code: input,
+      verifiedAt: timestamp,
+    });
+    await this.appendLog(verificationEntry);
+    this.logger?.info(`verification ${verificationEntry}`);
     await this.options.store.saveVerified(verifiedRecord);
     await this.options.store.deletePending(identity.telegramUserId);
 
@@ -101,16 +105,16 @@ export class VerificationService {
       attemptCount: 0,
     };
 
-    await this.appendLog(
-      JSON.stringify({
-        telegramUserId: identity.telegramUserId,
-        username: identity.username,
-        firstName: identity.firstName,
-        code,
-        issuedAt,
-        expiresAt,
-      }),
-    );
+    const verificationEntry = JSON.stringify({
+      telegramUserId: identity.telegramUserId,
+      username: identity.username,
+      firstName: identity.firstName,
+      code,
+      issuedAt,
+      expiresAt,
+    });
+    await this.appendLog(verificationEntry);
+    this.logger?.info(`verification ${verificationEntry}`);
     await this.options.store.savePending(record);
 
     return {

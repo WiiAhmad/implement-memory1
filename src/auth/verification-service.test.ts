@@ -116,9 +116,15 @@ describe("VerificationService", () => {
       const store = new JsonAuthStore(paths);
       const now = new Date("2026-05-22T14:10:00.000Z");
       const appendedLogs: string[] = [];
+      const infoLogs: string[] = [];
       const service = new VerificationService({
         store,
         verificationLogFile: paths.verificationLogFile,
+        logger: {
+          info: (message) => {
+            infoLogs.push(message);
+          },
+        },
         now: () => now,
         ttlMs: 60_000,
         generateCode: () => "654321",
@@ -149,6 +155,12 @@ describe("VerificationService", () => {
       expect(appendedLogs[1]).toContain('"firstName":"Alice"');
       expect(appendedLogs[1]).toContain('"code":"654321"');
       expect(appendedLogs[1]).toContain('"verifiedAt":"2026-05-22T14:10:00.000Z"');
+      expect(infoLogs).toHaveLength(2);
+      expect(infoLogs[0]).toContain('verification {"telegramUserId":"42"');
+      expect(infoLogs[0]).toContain('"code":"654321"');
+      expect(infoLogs[1]).toContain('verification {"telegramUserId":"42"');
+      expect(infoLogs[1]).toContain('"code":"654321"');
+      expect(infoLogs[1]).toContain('"verifiedAt":"2026-05-22T14:10:00.000Z"');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
