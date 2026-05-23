@@ -24,7 +24,7 @@ describe("TencentMemoryAdapter", () => {
       throw new Error("Expected recall to be called");
     }
 
-    expect(call).toEqual({
+    expect(call!).toEqual({
       query: "hello",
       userKey: "tg:user:42",
     });

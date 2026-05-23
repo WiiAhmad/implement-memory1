@@ -12,19 +12,19 @@ export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
     },
     extraction: {
       enabled: true,
-      enableDedup: false,
-      maxMemoriesPerSession: 100,
+      enableDedup: true,
+      maxMemoriesPerSession: 20,
     },
     persona: {
       triggerEveryN: 50,
-      maxScenes: 150,
+      maxScenes: 20,   // Match library default; 150 caused oversized scene nav
       backupCount: 3,
       sceneBackupCount: 10,
     },
     pipeline: {
       everyNConversations: 10,
       enableWarmup: true,
-      l1IdleTimeoutSeconds: 60,
+      l1IdleTimeoutSeconds: 600,   // 5 min (default: 600); aggressive idle triggers wasted L1 runs
       l2DelayAfterL1Seconds: 5,
       l2MinIntervalSeconds: 900,
       l2MaxIntervalSeconds: 3600,
@@ -33,12 +33,13 @@ export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
     recall: {
       enabled: true,
       maxResults: 5,
-      strategy: "hybrid",
+      scoreThreshold: 0.3,
+      strategy: "keyword",           // embedding is disabled below — hybrid would silently fall back to keyword
       timeoutMs: 5000,
     },
     embedding: {
       enabled: false,
-      provider: "openai",
+      provider: "none",              // was "openai" but disabled — confusing; "none" skips all embedding init
       baseUrl: env.embedding.baseUrl,
       apiKey: env.embedding.apiKey,
       model: env.embedding.model,

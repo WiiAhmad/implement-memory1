@@ -65,6 +65,11 @@ export class TencentMemoryAdapter implements MemoryAdapter {
     await this.core.handleTurnCommitted(turn);
   }
 
+  /** Expose the underlying TdaiCore for tool execution and advanced access. */
+  getCore(): TdaiCore {
+    return this.core;
+  }
+
   async close(): Promise<void> {
     await this.core.destroy();
   }

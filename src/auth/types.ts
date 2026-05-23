@@ -21,6 +21,6 @@ export type PendingCodeMap = Record<string, PendingVerificationRecord>;
 export type VerifiedUserMap = Record<string, VerifiedUserRecord>;
 
 export type VerificationResult =
-  | { kind: "awaiting_code"; expiresAt: string }
+  | { kind: "awaiting_code"; expiresAt: string; code: string }
   | { kind: "invalid_code"; expiresAt: string }
   | { kind: "verified" };

@@ -18,7 +18,40 @@ export function createBot(deps: {
   });
 
   bot.command("start", async (ctx) => {
-    await ctx.reply("Hi. Send any message to begin the one-time verification flow.");
+    await ctx.reply(
+      "Welcome!\n\n" +
+      "Commands:\n" +
+      "/verify — Get a fresh verification code (check server logs for the code)\n" +
+      "\n" +
+      "If you're not verified yet, send any message to begin the one-time verification process.",
+    );
+  });
+
+  bot.command("verify", async (ctx) => {
+    if (!ctx.from) return;
+
+    const identity = {
+      telegramUserId: String(ctx.from.id),
+      username: ctx.from.username ?? null,
+      firstName: ctx.from.first_name ?? null,
+    };
+
+    try {
+      const result = await deps.verificationService.issueFreshCode(identity);
+
+      if (result.kind === "verified") {
+        await ctx.reply("You are already verified. You can chat now.");
+        return;
+      }
+
+      await ctx.reply(
+        "A fresh verification code has been issued. Check the server logs for your 6-digit code and send it here.",
+      );
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      deps.logger.error(`[bot] /verify error: ${msg}`);
+      await ctx.reply("Failed to issue verification code. Please try again.");
+    }
   });
 
   bot.on(
@@ -26,6 +59,7 @@ export function createBot(deps: {
     createTextHandler({
       verificationService: deps.verificationService,
       chatService: deps.chatService,
+      logger: deps.logger,
     }),
   );
 

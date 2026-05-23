@@ -25,12 +25,13 @@ describe("buildTdaiRawConfig", () => {
     expect(raw.recall).toEqual({
       enabled: true,
       maxResults: 5,
-      strategy: "hybrid",
+      scoreThreshold: 0.3,
+      strategy: "keyword",
       timeoutMs: 5000,
     });
     expect(raw.embedding).toEqual({
-      enabled: true,
-      provider: "openai",
+      enabled: false,
+      provider: "none",
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-embed",
       model: "text-embedding-3-small",

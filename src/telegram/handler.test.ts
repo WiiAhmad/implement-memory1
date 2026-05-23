@@ -29,6 +29,7 @@ describe("createTextHandler", () => {
         handleUnverifiedInput: async () => ({
           kind: "awaiting_code" as const,
           expiresAt: "2026-05-22T10:15:00.000Z",
+          code: "654321",
         }),
       },
       chatService: {
@@ -38,7 +39,9 @@ describe("createTextHandler", () => {
 
     await handler(ctx as never);
 
+    // Code is NOT in the reply — only server logs show it
     expect(replies[0]).toContain("Verification required");
+    expect(replies[0]).not.toContain("654321");
   });
 
   test("uses chat for a verified user", async () => {

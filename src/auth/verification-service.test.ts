@@ -90,6 +90,7 @@ describe("VerificationService", () => {
       expect(result).toEqual({
         kind: "awaiting_code",
         expiresAt: "2026-05-22T14:15:00.000Z",
+        code: "123456",
       });
       expect(pending).not.toBeNull();
       expect(pending?.telegramUserId).toBe(identity.telegramUserId);
@@ -100,7 +101,7 @@ describe("VerificationService", () => {
       expect(logText).toContain('"telegramUserId":"42"');
       expect(logText).toContain('"username":"alice"');
       expect(logText).toContain('"code":"123456"');
-      expect(JSON.stringify(result)).not.toContain("123456");
+      expect(result.code).toBe("123456");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -156,8 +157,11 @@ describe("VerificationService", () => {
       expect(appendedLogs[1]).toContain('"code":"654321"');
       expect(appendedLogs[1]).toContain('"verifiedAt":"2026-05-22T14:10:00.000Z"');
       expect(infoLogs).toHaveLength(2);
-      expect(infoLogs[0]).toContain('verification {"telegramUserId":"42"');
+      // First info log is the prominent box format for code issuance
+      expect(infoLogs[0]).toContain('VERIFICATION CODE: 654321');
+      expect(infoLogs[0]).toContain('"telegramUserId":"42"');
       expect(infoLogs[0]).toContain('"code":"654321"');
+      // Second info log is the verification completion entry
       expect(infoLogs[1]).toContain('verification {"telegramUserId":"42"');
       expect(infoLogs[1]).toContain('"code":"654321"');
       expect(infoLogs[1]).toContain('"verifiedAt":"2026-05-22T14:10:00.000Z"');
@@ -196,13 +200,14 @@ describe("VerificationService", () => {
       expect(result).toEqual({
         kind: "awaiting_code",
         expiresAt: "2026-05-22T14:22:01.000Z",
+        code: "222222",
       });
       expect(firstPending).not.toBeNull();
       expect(secondPending).not.toBeNull();
       expect(secondPending?.codeHash).not.toBe(firstPending?.codeHash);
       expect(logText).toContain('"code":"111111"');
       expect(logText).toContain('"code":"222222"');
-      expect(JSON.stringify(result)).not.toContain("222222");
+      expect(result.code).toBe("222222");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -229,6 +234,76 @@ describe("VerificationService", () => {
         "log write failed",
       );
       expect(await store.getPending(identity.telegramUserId)).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("issueFreshCode deletes any stale pending code and issues a fresh one", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-auth-"));
+
+    try {
+      const paths = resolveDataPaths(root);
+      await ensureRuntimeDirectories(paths);
+
+      const store = new JsonAuthStore(paths);
+      const now = new Date("2026-05-22T15:00:00.000Z");
+      let codeIndex = 0;
+      const codes = ["888888", "999999"];
+      const service = new VerificationService({
+        store,
+        verificationLogFile: paths.verificationLogFile,
+        now: () => now,
+        generateCode: () => codes[codeIndex++ % codes.length],
+      });
+
+      // First, issue a code normally (code=888888)
+      await service.handleUnverifiedInput(identity, "first message");
+      const firstPending = await store.getPending(identity.telegramUserId);
+
+      // Then call issueFreshCode — should replace with fresh code (code=999999)
+      const result = await service.issueFreshCode(identity);
+      const secondPending = await store.getPending(identity.telegramUserId);
+
+      expect(result).toEqual({
+        kind: "awaiting_code",
+        expiresAt: "2026-05-22T15:15:00.000Z",
+        code: "999999",
+      });
+      expect(firstPending).not.toBeNull();
+      expect(secondPending).not.toBeNull();
+      expect(secondPending?.codeHash).not.toBe(firstPending?.codeHash);
+      expect(secondPending?.attemptCount).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("issueFreshCode returns verified for already-verified users", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "agent-auth-"));
+
+    try {
+      const paths = resolveDataPaths(root);
+      await ensureRuntimeDirectories(paths);
+
+      const store = new JsonAuthStore(paths);
+      const now = new Date("2026-05-22T15:30:00.000Z");
+      const service = new VerificationService({
+        store,
+        verificationLogFile: paths.verificationLogFile,
+        now: () => now,
+        ttlMs: 60_000,
+        generateCode: () => "111111",
+      });
+
+      // First, complete verification normally
+      await service.handleUnverifiedInput(identity, "hello");
+      await service.handleUnverifiedInput(identity, "111111");
+
+      // Now issueFreshCode should return verified
+      const result = await service.issueFreshCode(identity);
+
+      expect(result).toEqual({ kind: "verified" });
     } finally {
       await rm(root, { recursive: true, force: true });
     }

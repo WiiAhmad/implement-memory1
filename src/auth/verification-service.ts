@@ -40,6 +40,19 @@ export class VerificationService {
     return this.options.store.isVerified(telegramUserId);
   }
 
+  /**
+   * Force-issue a fresh verification code, deleting any existing pending one.
+   * Returns `verified` if the user is already verified.
+   */
+  async issueFreshCode(identity: TelegramIdentity): Promise<VerificationResult> {
+    if (await this.options.store.isVerified(identity.telegramUserId)) {
+      return { kind: "verified" };
+    }
+
+    // No need to delete the old pending code — savePending overwrites by telegramUserId
+    return this.issueCode(identity, this.now());
+  }
+
   async handleUnverifiedInput(
     identity: TelegramIdentity,
     input: string,
@@ -114,12 +127,20 @@ export class VerificationService {
       expiresAt,
     });
     await this.appendLog(verificationEntry);
-    this.logger?.info(`verification ${verificationEntry}`);
+    this.logger?.info(
+      `\n═══════════════════════════════════════════════════════════\n` +
+      `  🔐 VERIFICATION CODE: ${code}\n` +
+      `  User: @${identity.username ?? identity.telegramUserId}\n` +
+      `  Expires: ${expiresAt}\n` +
+      `  Entry: ${verificationEntry}\n` +
+      `═══════════════════════════════════════════════════════════\n`,
+    );
     await this.options.store.savePending(record);
 
     return {
       kind: "awaiting_code",
       expiresAt,
+      code,
     };
   }
 }
