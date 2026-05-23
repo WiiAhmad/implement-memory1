@@ -21,7 +21,7 @@ export interface ChatServiceOptions {
 
 export class ChatService {
   private readonly histories = new Map<number, ChatMessage[]>();
-  private readonly MAX_HISTORY = 20;
+  private readonly MAX_HISTORY = 10;
   private readonly promptBuilder: PromptBuilder;
   private readonly toolHandler?: ToolHandler;
 

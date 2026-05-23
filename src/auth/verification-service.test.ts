@@ -8,6 +8,15 @@ import { JsonAuthStore } from "./auth-store.ts";
 import type { TelegramIdentity } from "./types.ts";
 import { VerificationService } from "./verification-service.ts";
 
+/** ISO date string in yyyy-mm-dd format. */
+function todayDateStr(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 const identity: TelegramIdentity = {
   telegramUserId: "42",
   username: "alice",
@@ -85,7 +94,8 @@ describe("VerificationService", () => {
 
       const result = await service.handleUnverifiedInput(identity, "hello");
       const pending = await store.getPending(identity.telegramUserId);
-      const logText = await readFile(paths.verificationLogFile, "utf8");
+      const logFilePath = path.join(paths.logsDir, `${todayDateStr()}-verification.log`);
+      const logText = await readFile(logFilePath, "utf8");
 
       expect(result).toEqual({
         kind: "awaiting_code",
@@ -195,7 +205,8 @@ describe("VerificationService", () => {
 
       const result = await service.handleUnverifiedInput(identity, "111111");
       const secondPending = await store.getPending(identity.telegramUserId);
-      const logText = await readFile(paths.verificationLogFile, "utf8");
+      const logFilePath = path.join(paths.logsDir, `${todayDateStr()}-verification.log`);
+      const logText = await readFile(logFilePath, "utf8");
 
       expect(result).toEqual({
         kind: "awaiting_code",

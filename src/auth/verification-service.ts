@@ -1,5 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import path from "node:path";
 import type { Logger } from "../../TencentDB-Agent-Memory/src/core/types.ts";
 import type { JsonAuthStore } from "./auth-store.ts";
 import type {
@@ -32,7 +33,12 @@ export class VerificationService {
     this.generateCode = options.generateCode ?? defaultGenerateCode;
     this.appendLog =
       options.appendLog ??
-      ((message: string) => appendFile(options.verificationLogFile, `${message}\n`, "utf8"));
+      ((message: string) => {
+        const today = todayDateStr();
+        const logsDir = path.dirname(options.verificationLogFile);
+        const logFile = path.join(logsDir, `${today}-verification.log`);
+        return appendFile(logFile, `${message}\n`, "utf8");
+      });
     this.logger = options.logger;
   }
 
@@ -147,6 +153,15 @@ export class VerificationService {
 
 function hashCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
+}
+
+/** ISO date string in yyyy-mm-dd format. */
+function todayDateStr(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 function defaultGenerateCode(): string {

@@ -49,7 +49,9 @@ describe("resolveDataPaths", () => {
       expect(paths.memoryDir).toBe(path.join(path.resolve(root), "memory-tdai"));
       expect(paths.pendingCodesFile).toBe(path.join(paths.authDir, "pending-codes.json"));
       expect(paths.verifiedUsersFile).toBe(path.join(paths.authDir, "verified-users.json"));
-      expect(paths.verificationLogFile).toBe(path.join(paths.logsDir, "verification.log"));
+      expect(paths.verificationLogFile).toBe(
+        path.join(paths.logsDir, "verification.log"),
+      );
 
       await ensureRuntimeDirectories(paths);
     } finally {

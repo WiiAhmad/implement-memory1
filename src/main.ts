@@ -55,6 +55,7 @@ export async function start(): Promise<void> {
       await polling.catch(() => undefined);
     }
     await memory.close();
+    await logger.close();
     process.exit(0);
   };
 
