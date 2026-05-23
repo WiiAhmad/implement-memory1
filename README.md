@@ -7,6 +7,8 @@ bun install
 cp .env.example .env
 ```
 
+Running `bun install` at the repo root also installs dependencies in `TencentDB-Agent-Memory/`.
+
 Set all OpenAI and Telegram values in `.env` before starting the bot.
 
 ## Run

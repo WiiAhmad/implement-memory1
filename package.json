@@ -8,7 +8,7 @@
     "dev": "bun --watch index.ts",
     "build": "bun build index.ts --outdir dist --target bun --external node-llama-cpp",
     "test": "bun test",
-    "patch": "git apply patch/tencentdb-bun-sqlite.patch"
+    "postinstall": "bun install --cwd ./TencentDB-Agent-Memory"
   },
   "devDependencies": {
     "@types/bun": "latest"
