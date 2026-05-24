@@ -75,8 +75,8 @@ export class ChatService {
       { role: "assistant" as const, content: reply },
     ];
 
-    if (updatedHistory.length > this.MAX_HISTORY * 2) {
-      this.histories.set(telegramUserId, updatedHistory.slice(-this.MAX_HISTORY * 2));
+    if (updatedHistory.length > this.MAX_HISTORY) {
+      this.histories.set(telegramUserId, updatedHistory.slice(-this.MAX_HISTORY));
     } else {
       this.histories.set(telegramUserId, updatedHistory);
     }

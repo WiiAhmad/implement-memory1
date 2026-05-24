@@ -6,8 +6,8 @@
   "scripts": {
     "start": "bun run dist/index.js",
     "dev": "bun --watch index.ts",
-    "build": "bun build index.ts --outdir dist --target bun --external node-llama-cpp",
-    "test": "bun test",
+    "build": "bun build index.ts --outdir dist --target bun",
+    "test": "bun test ./src/**/*.test.ts",
     "postinstall": "bun install --cwd ./TencentDB-Agent-Memory"
   },
   "devDependencies": {
