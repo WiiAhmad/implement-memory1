@@ -34,8 +34,7 @@ export class ChatService {
   /** Ordered list of user IDs for LRU eviction (most recently used at the end). */
   private readonly userAccessOrder: number[] = [];
   private readonly histories = new Map<number, ChatMessage[]>();
-  private readonly offloadPostTurnChains = new Map<string, Promise<void>>();
-  private readonly MAX_HISTORY = 15;
+  private readonly MAX_HISTORY = 20;
   private readonly promptBuilder: PromptBuilder;
   private readonly toolHandler?: ToolHandler;
   private readonly offloadService?: OffloadService;
@@ -194,54 +193,29 @@ export class ChatService {
       this.histories.set(params.telegramUserId, updatedHistory);
     }
 
-    // ── 6. Post-turn work runs outside the reply path ──
+    // ── 6. Post-turn work: offload afterTurn + memory capture ──
     if (this.offloadService) {
-      const offloadService = this.offloadService;
-      this.runOffloadPostTurn(userKey, async () => {
-        const afterTurnStartedAt = Date.now();
-        await Promise.allSettled(offloadToolTasks);
-        await offloadService.afterTurn({ userKey, userText: params.text });
-        this.opts.logger.info(`[timing] offload.afterTurn: ${Date.now() - afterTurnStartedAt}ms`);
-      });
+      const afterTurnStartedAt = Date.now();
+      await Promise.allSettled(offloadToolTasks);
+      try {
+        await this.offloadService.afterTurn({ userKey, userText: params.text });
+      } catch (err) {
+        this.opts.logger.warn(`[offload] afterTurn failed: ${this.formatError(err)}`);
+      }
+      this.opts.logger.info(`[timing] offload.afterTurn: ${Date.now() - afterTurnStartedAt}ms`);
     }
 
-    this.runInBackground("Memory capture", async () => {
-      const captureStartedAt = Date.now();
+    const captureStartedAt = Date.now();
+    try {
       await this.opts.memory.capture(userKey, params.text, reply);
-      this.opts.logger.info(`[timing] memory.capture: ${Date.now() - captureStartedAt}ms`);
-    });
+    } catch (err) {
+      this.opts.logger.warn(`Memory capture failed: ${this.formatError(err)}`);
+    }
+    this.opts.logger.info(`[timing] memory.capture: ${Date.now() - captureStartedAt}ms`);
 
     this.opts.logger.info(`[timing] replyToUser total: ${Date.now() - startedAt}ms (user=${params.telegramUserId})`);
     return reply;
   }
-
-  private runOffloadPostTurn(userKey: string, task: () => Promise<void>): void {
-    setTimeout(() => {
-      const previous = this.offloadPostTurnChains.get(userKey) ?? Promise.resolve();
-      const next = previous
-        .catch(() => undefined)
-        .then(task)
-        .catch((error: unknown) => {
-          this.opts.logger.warn(`[offload] afterTurn failed: ${this.formatError(error)}`);
-        })
-        .finally(() => {
-          if (this.offloadPostTurnChains.get(userKey) === next) {
-            this.offloadPostTurnChains.delete(userKey);
-          }
-        });
-
-      this.offloadPostTurnChains.set(userKey, next);
-    }, 0);
-  }
-
-  private runInBackground(label: string, task: () => Promise<void>): void {
-    setTimeout(() => {
-      void task().catch((error: unknown) => {
-        this.opts.logger.warn(`${label} failed: ${this.formatError(error)}`);
-      });
-    }, 0);
-  }
-
   private formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
   }
