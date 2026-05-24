@@ -6,6 +6,7 @@ import { createLogger } from "./logging/console-logger.ts";
 import { createJsonlLogger } from "./logging/jsonl-logger.ts";
 import { combineLoggers } from "./logging/combine-loggers.ts";
 import { TencentMemoryAdapter } from "./memory/tencent-memory-adapter.ts";
+import { OffloadService } from "./offload/index.ts";
 import { OpenAiChatClient } from "./openai/chat-client.ts";
 import { ChatService } from "./services/chat-service.ts";
 import { ToolHandler } from "./tools/tool-handler.ts";
@@ -40,7 +41,26 @@ export async function start(): Promise<void> {
   // Wire memory search tools so the LLM can proactively search memories
   // during a conversation turn (tdai_memory_search, tdai_conversation_search).
   const toolHandler = new ToolHandler({ core: memory.getCore(), logger });
-  const chatService = new ChatService({ memory, chatClient, logger, toolHandler });
+
+  // Optional offload service for context compression
+  // When OFFLOAD_MODEL is not set, falls back to the main chat MODEL.
+  const offloadConfig = {
+    ...env.offload,
+    model: env.offload.model || env.model,
+  };
+  const offloadService = env.offload.enabled
+    ? new OffloadService({
+        enabled: true,
+        config: offloadConfig,
+        logger,
+        getDataDir: () => paths.memoryDir,
+        baseUrl: env.baseUrl,
+        apiKey: env.openAIApiKey,
+      })
+    : undefined;
+
+  const chatService = new ChatService({ memory, chatClient, logger, toolHandler, offloadService });
+
   const bot = createBot({
     token: env.botToken,
     logger,
@@ -53,6 +73,9 @@ export async function start(): Promise<void> {
     if (polling) {
       await bot.stop();
       await polling.catch(() => undefined);
+    }
+    if (offloadService) {
+      await offloadService.close();
     }
     await memory.close();
     await logger.close();

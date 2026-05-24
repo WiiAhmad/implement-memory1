@@ -23,6 +23,17 @@ export interface ChatReplyParams {
    * Required when tools are provided.
    */
   executeTool?: ToolExecutor;
+  /**
+   * Optional callback invoked after each tool call execution.
+   * Used by OffloadService to buffer tool call/result pairs for L1 summarization.
+   * Called after executeTool completes, with the tool name, ID, params, and result.
+   */
+  onToolCallResult?: (params: {
+    toolName: string;
+    toolCallId: string;
+    params: Record<string, unknown>;
+    result: string;
+  }) => void | Promise<void>;
 }
 
 export interface ChatClient {
@@ -121,6 +132,16 @@ export class OpenAiChatClient implements ChatClient {
               tool_call_id: tc.id,
               content: result,
             } as OpenAI.Chat.Completions.ChatCompletionToolMessageParam);
+
+            // Notify the onToolCallResult callback (fire-and-forget for offload)
+            if (params.onToolCallResult) {
+              void params.onToolCallResult({
+                toolName: tc.function.name,
+                toolCallId: tc.id,
+                params: args,
+                result,
+              });
+            }
           }
         }
 

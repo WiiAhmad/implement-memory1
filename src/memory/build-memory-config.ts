@@ -6,48 +6,56 @@ export function buildMemorySessionKey(telegramUserId: number | string): string {
 
 export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
   return {
-    storeBackend: "sqlite",
+    storeBackend: env.memory.storeBackend,
     capture: {
-      enabled: true,
+      enabled: env.memory.captureEnabled,
     },
     extraction: {
-      enabled: true,
-      enableDedup: true,
-      maxMemoriesPerSession: 20,
+      enabled: env.memory.extractionEnabled,
+      enableDedup: env.memory.extractionDedup,
+      maxMemoriesPerSession: env.memory.maxMemoriesPerSession,
     },
     persona: {
-      triggerEveryN: 50,
-      maxScenes: 20,   // Match library default; 150 caused oversized scene nav
-      backupCount: 3,
-      sceneBackupCount: 10,
+      triggerEveryN: env.memory.personaTriggerEveryN,
+      maxScenes: env.memory.personaMaxScenes,
+      backupCount: env.memory.personaBackupCount,
+      sceneBackupCount: env.memory.personaSceneBackupCount,
     },
     pipeline: {
-      everyNConversations: 10,
-      enableWarmup: true,
-      l1IdleTimeoutSeconds: 600,   // 5 min (default: 600); aggressive idle triggers wasted L1 runs
-      l2DelayAfterL1Seconds: 5,
-      l2MinIntervalSeconds: 900,
-      l2MaxIntervalSeconds: 3600,
-      sessionActiveWindowHours: 24,
+      everyNConversations: env.memory.pipelineEveryNConversations,
+      enableWarmup: env.memory.pipelineWarmup,
+      l1IdleTimeoutSeconds: env.memory.l1IdleTimeoutSeconds,
+      l2DelayAfterL1Seconds: env.memory.l2DelayAfterL1Seconds,
+      l2MinIntervalSeconds: env.memory.l2MinIntervalSeconds,
+      l2MaxIntervalSeconds: env.memory.l2MaxIntervalSeconds,
+      sessionActiveWindowHours: env.memory.sessionActiveWindowHours,
     },
     recall: {
-      enabled: true,
-      maxResults: 5,
-      scoreThreshold: 0.3,
-      strategy: "keyword",           // embedding is disabled below — hybrid would silently fall back to keyword
-      timeoutMs: 5000,
+      enabled: env.memory.recallEnabled,
+      maxResults: env.memory.recallMaxResults,
+      scoreThreshold: env.memory.recallScoreThreshold,
+      strategy: env.memory.recallStrategy,
+      timeoutMs: env.memory.recallTimeoutMs,
     },
     embedding: {
-      enabled: false,
-      provider: "none",              // was "openai" but disabled — confusing; "none" skips all embedding init
+      enabled: env.memory.embeddingEnabled,
+      provider: env.memory.embeddingProvider,
       baseUrl: env.embedding.baseUrl,
       apiKey: env.embedding.apiKey,
       model: env.embedding.model,
       dimensions: env.embedding.dimensions,
     },
     bm25: {
-      enabled: true,
-      language: "en",
+      enabled: env.memory.bm25Enabled,
+      language: env.memory.bm25Language,
+    },
+    offload: {
+      enabled: env.offload.enabled,
+      model: env.offload.model,
+      temperature: env.offload.temperature,
+      defaultContextWindow: env.offload.contextWindow,
+      l2NullThreshold: env.offload.l2NullThreshold,
+      l2TimeoutSeconds: env.offload.l2TimeoutSeconds,
     },
   };
 }

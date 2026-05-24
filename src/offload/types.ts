@@ -1,0 +1,113 @@
+/**
+ * Offload configuration types for the Telegram bot.
+ *
+ * These types wrap the TencentDB-Agent-Memory offload module's configuration
+ * into a format suitable for the bot's env-based config system.
+ *
+ * All defaults match the library's PLUGIN_DEFAULTS.
+ */
+
+// ─── Re-exports from the library ────────────────────────────────────────
+
+export type {
+  OffloadEntry,
+  PluginConfig,
+  ToolPair,
+  PluginLogger,
+} from "../../TencentDB-Agent-Memory/src/offload/types.ts";
+
+export { PLUGIN_DEFAULTS } from "../../TencentDB-Agent-Memory/src/offload/types.ts";
+
+export type {
+  StorageContext,
+} from "../../TencentDB-Agent-Memory/src/offload/storage.ts";
+
+// ─── Bot-level OffloadConfig ────────────────────────────────────────────
+
+/**
+ * Offload configuration parsed from environment variables.
+ * Controls all layers of the offload system.
+ */
+export interface OffloadConfig {
+  /** Master switch — when false, all offload operations are no-ops. */
+  enabled: boolean;
+
+  /** LLM model to use for L1/L1.5/L2 calls. Falls back to main chat model. */
+  model?: string;
+
+  /** LLM temperature for offload tasks (default: 0.2). */
+  temperature: number;
+
+  /** Model context window size (default: 128000 for GPT-4o). */
+  contextWindow: number;
+
+  /** L1 tool pair summarization (default: false). */
+  l1Enabled: boolean;
+
+  /** L1.5 task boundary detection (default: false). */
+  l15Enabled: boolean;
+
+  /** L2 MMD generation (default: false). */
+  l2Enabled: boolean;
+
+  /** Data retention in days (0 = disabled, min effective: 3). */
+  offloadRetentionDays: number;
+
+  // ─── Compression Threshold Ratios ────────────────────────────────
+
+  /** Token utilisation ratio that triggers mild compression (default: 0.85). */
+  mildOffloadRatio: number;
+
+  /** Token utilisation ratio that triggers aggressive compression (default: 0.85). */
+  aggressiveCompressRatio: number;
+
+  /** Token utilisation ratio that triggers emergency compression (default: 0.95). */
+  emergencyCompressRatio: number;
+
+  /** Target token utilisation after emergency compression (default: 0.6). */
+  emergencyTargetRatio: number;
+
+  /** Fraction of oldest messages to delete per aggressive round (default: 0.4). */
+  aggressiveDeleteRatio: number;
+
+  /** Fraction of messages to scan for mild compression candidates (default: 0.7). */
+  mildOffloadScanRatio: number;
+
+  /** Max fraction of context window for MMD injection (default: 0.2). */
+  mmdMaxTokenRatio: number;
+
+  // ─── L2 Scheduling ───────────────────────────────────────────────
+
+  /** Minimum null-score entries before L2 triggers (default: 4). */
+  l2NullThreshold: number;
+
+  /** Seconds since last L2 before a new check runs (default: 300). */
+  l2TimeoutSeconds: number;
+}
+
+/**
+ * Default values for OffloadConfig fields.
+ */
+export const DEFAULT_OFFLOAD_CONFIG: OffloadConfig = {
+  enabled: false,
+  model: undefined,
+  temperature: 0.2,
+  contextWindow: 128_000,
+  l1Enabled: false,
+  l15Enabled: false,
+  l2Enabled: false,
+  offloadRetentionDays: 0,
+
+  // Compression threshold ratios (matching PLUGIN_DEFAULTS)
+  mildOffloadRatio: 0.85,
+  aggressiveCompressRatio: 0.85,
+  emergencyCompressRatio: 0.95,
+  emergencyTargetRatio: 0.6,
+  aggressiveDeleteRatio: 0.4,
+  mildOffloadScanRatio: 0.7,
+  mmdMaxTokenRatio: 0.2,
+
+  // L2 scheduling
+  l2NullThreshold: 4,
+  l2TimeoutSeconds: 300,
+};

@@ -33,6 +33,105 @@ describe("parseEnv", () => {
       model: "text-embedding-3-small",
       dimensions: 1536,
     });
+
+    // Memory defaults (no vars set)
+    expect(env.memory.storeBackend).toBe("sqlite");
+    expect(env.memory.captureEnabled).toBe(true);
+    expect(env.memory.extractionEnabled).toBe(true);
+    expect(env.memory.extractionDedup).toBe(true);
+    expect(env.memory.maxMemoriesPerSession).toBe(20);
+    expect(env.memory.personaTriggerEveryN).toBe(50);
+    expect(env.memory.personaMaxScenes).toBe(20);
+    expect(env.memory.personaBackupCount).toBe(3);
+    expect(env.memory.personaSceneBackupCount).toBe(10);
+    expect(env.memory.pipelineEveryNConversations).toBe(10);
+    expect(env.memory.pipelineWarmup).toBe(true);
+    expect(env.memory.l1IdleTimeoutSeconds).toBe(600);
+    expect(env.memory.l2DelayAfterL1Seconds).toBe(5);
+    expect(env.memory.l2MinIntervalSeconds).toBe(900);
+    expect(env.memory.l2MaxIntervalSeconds).toBe(3600);
+    expect(env.memory.sessionActiveWindowHours).toBe(24);
+    expect(env.memory.recallEnabled).toBe(true);
+    expect(env.memory.recallMaxResults).toBe(5);
+    expect(env.memory.recallScoreThreshold).toBe(0.3);
+    expect(env.memory.recallStrategy).toBe("keyword");
+    expect(env.memory.recallTimeoutMs).toBe(5000);
+    expect(env.memory.embeddingEnabled).toBe(false);
+    expect(env.memory.embeddingProvider).toBe("none");
+    expect(env.memory.bm25Enabled).toBe(true);
+    expect(env.memory.bm25Language).toBe("en");
+
+    // Offload defaults (no vars set)
+    expect(env.offload.enabled).toBe(false);
+    expect(env.offload.model).toBeUndefined();
+    expect(env.offload.temperature).toBe(0.2);
+    expect(env.offload.contextWindow).toBe(128_000);
+    expect(env.offload.l1Enabled).toBe(false);
+    expect(env.offload.l15Enabled).toBe(false);
+    expect(env.offload.l2Enabled).toBe(false);
+    expect(env.offload.offloadRetentionDays).toBe(0);
+
+    // Compression defaults
+    expect(env.offload.mildOffloadRatio).toBe(0.85);
+    expect(env.offload.aggressiveCompressRatio).toBe(0.85);
+    expect(env.offload.emergencyCompressRatio).toBe(0.95);
+    expect(env.offload.emergencyTargetRatio).toBe(0.6);
+    expect(env.offload.aggressiveDeleteRatio).toBe(0.4);
+    expect(env.offload.mildOffloadScanRatio).toBe(0.7);
+    expect(env.offload.mmdMaxTokenRatio).toBe(0.2);
+    expect(env.offload.l2NullThreshold).toBe(4);
+    expect(env.offload.l2TimeoutSeconds).toBe(300);
+  });
+
+  test("parses offload env vars when set", () => {
+    const env = parseEnv({
+      BOT_TOKEN: "123456:telegram-token",
+      MEMORY_AGENT: "data",
+      PROVIDER: "openai",
+      OPENAI_API_KEY: "sk-chat",
+      BASE_URL: "https://api.openai.com/v1",
+      MODEL: "gpt-4o-mini",
+      EMBEDDING_BASE_URL: "https://api.openai.com/v1",
+      EMBEDDING_API_KEY: "sk-embed",
+      EMBEDDING_MODEL: "text-embedding-3-small",
+      EMBEDDING_DIMENSIONS: "1536",
+      OFFLOAD_ENABLED: "true",
+      OFFLOAD_MODEL: "gpt-4o-mini",
+      OFFLOAD_TEMPERATURE: "0.1",
+      OFFLOAD_CONTEXT_WINDOW: "200000",
+      OFFLOAD_L1_ENABLED: "true",
+      OFFLOAD_L15_ENABLED: "true",
+      OFFLOAD_L2_ENABLED: "true",
+      OFFLOAD_RETENTION_DAYS: "7",
+      OFFLOAD_MILD_RATIO: "0.75",
+      OFFLOAD_AGGRESSIVE_RATIO: "0.80",
+      OFFLOAD_EMERGENCY_RATIO: "0.90",
+      OFFLOAD_EMERGENCY_TARGET_RATIO: "0.50",
+      OFFLOAD_AGGRESSIVE_DELETE_RATIO: "0.35",
+      OFFLOAD_MILD_SCAN_RATIO: "0.65",
+      OFFLOAD_MMD_MAX_TOKEN_RATIO: "0.15",
+      OFFLOAD_L2_NULL_THRESHOLD: "2",
+      OFFLOAD_L2_TIMEOUT_SECONDS: "600",
+    });
+
+    expect(env.offload.enabled).toBe(true);
+    expect(env.offload.model).toBe("gpt-4o-mini");
+    expect(env.offload.temperature).toBe(0.1);
+    expect(env.offload.contextWindow).toBe(200_000);
+    expect(env.offload.l1Enabled).toBe(true);
+    expect(env.offload.l15Enabled).toBe(true);
+    expect(env.offload.l2Enabled).toBe(true);
+    expect(env.offload.offloadRetentionDays).toBe(7);
+
+    expect(env.offload.mildOffloadRatio).toBe(0.75);
+    expect(env.offload.aggressiveCompressRatio).toBe(0.80);
+    expect(env.offload.emergencyCompressRatio).toBe(0.90);
+    expect(env.offload.emergencyTargetRatio).toBe(0.50);
+    expect(env.offload.aggressiveDeleteRatio).toBe(0.35);
+    expect(env.offload.mildOffloadScanRatio).toBe(0.65);
+    expect(env.offload.mmdMaxTokenRatio).toBe(0.15);
+    expect(env.offload.l2NullThreshold).toBe(2);
+    expect(env.offload.l2TimeoutSeconds).toBe(600);
   });
 });
 
