@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import { JsonAuthStore } from "./auth/auth-store.ts";
 import { VerificationService } from "./auth/verification-service.ts";
 import { parseEnv } from "./config/env.ts";
@@ -32,11 +31,12 @@ export async function start(): Promise<void> {
   });
 
   const memory = await TencentMemoryAdapter.create(env, paths, logger);
-  const openai = new OpenAI({
+  const chatClient = new OpenAiChatClient({
+    baseUrl: env.baseUrl,
     apiKey: env.openAIApiKey,
-    baseURL: env.baseUrl,
-  });
-  const chatClient = new OpenAiChatClient(openai, env.model);
+    model: env.model,
+    timeoutMs: 30_000,
+  }, logger);
 
   // Wire memory search tools so the LLM can proactively search memories
   // during a conversation turn (tdai_memory_search, tdai_conversation_search).

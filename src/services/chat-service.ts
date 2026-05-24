@@ -28,6 +28,7 @@ export interface ChatServiceOptions {
 
 export class ChatService {
   private readonly histories = new Map<number, ChatMessage[]>();
+  private readonly offloadPostTurnChains = new Map<string, Promise<void>>();
   private readonly MAX_HISTORY = 10;
   private readonly promptBuilder: PromptBuilder;
   private readonly toolHandler?: ToolHandler;
@@ -77,6 +78,7 @@ export class ChatService {
       previousMessages: offloadMessages,
     });
 
+    const offloadToolTasks: Promise<void>[] = [];
     const reply = await this.opts.chatClient.reply({
       systemPrompt: prompt.systemPrompt,
       userPrompt: prompt.userPrompt,
@@ -87,15 +89,17 @@ export class ChatService {
         : undefined,
       onToolCallResult: this.offloadService
         ? (tc) => {
-            void this.offloadService!.onToolCall({
+            const task = this.offloadService!.onToolCall({
               userKey,
               toolName: tc.toolName,
               toolCallId: tc.toolCallId,
               params: tc.params,
               result: tc.result,
             }).catch((err: unknown) =>
-              this.opts.logger.warn(`[offload] onToolCall error: ${err}`),
+              this.opts.logger.warn(`[offload] onToolCall error: ${this.formatError(err)}`),
             );
+            offloadToolTasks.push(task);
+            void task;
           }
         : undefined,
     });
@@ -114,20 +118,50 @@ export class ChatService {
       this.histories.set(params.telegramUserId, updatedHistory);
     }
 
-    // ── 6. Offload after-turn: save state, flush L1 pairs, judge L1.5 boundary ──
+    // ── 6. Post-turn work runs outside the reply path ──
     if (this.offloadService) {
-      await this.offloadService.afterTurn({ userKey, userText: params.text });
+      const offloadService = this.offloadService;
+      this.runOffloadPostTurn(userKey, async () => {
+        await Promise.allSettled(offloadToolTasks);
+        await offloadService.afterTurn({ userKey, userText: params.text });
+      });
     }
 
-    // ── 7. Memory capture (long-term storage to TencentDB) ──
-    try {
+    this.runInBackground("Memory capture", async () => {
       await this.opts.memory.capture(userKey, params.text, reply);
-    } catch (error) {
-      this.opts.logger.warn(
-        `Memory capture failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    });
 
     return reply;
+  }
+
+  private runOffloadPostTurn(userKey: string, task: () => Promise<void>): void {
+    setTimeout(() => {
+      const previous = this.offloadPostTurnChains.get(userKey) ?? Promise.resolve();
+      const next = previous
+        .catch(() => undefined)
+        .then(task)
+        .catch((error: unknown) => {
+          this.opts.logger.warn(`[offload] afterTurn failed: ${this.formatError(error)}`);
+        })
+        .finally(() => {
+          if (this.offloadPostTurnChains.get(userKey) === next) {
+            this.offloadPostTurnChains.delete(userKey);
+          }
+        });
+
+      this.offloadPostTurnChains.set(userKey, next);
+    }, 0);
+  }
+
+  private runInBackground(label: string, task: () => Promise<void>): void {
+    setTimeout(() => {
+      void task().catch((error: unknown) => {
+        this.opts.logger.warn(`${label} failed: ${this.formatError(error)}`);
+      });
+    }, 0);
+  }
+
+  private formatError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

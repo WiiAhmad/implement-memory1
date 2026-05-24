@@ -38,7 +38,9 @@ export function createTextHandler(deps: {
             text,
           });
           await ctx.reply(reply);
-        } catch {
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          deps.logger?.error(`[handler] Chat reply failed: ${msg}`);
           await ctx.reply("Temporary error. Please try again in a moment.");
         }
         return;

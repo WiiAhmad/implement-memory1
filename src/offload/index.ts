@@ -269,7 +269,19 @@ export class OffloadService {
 
   /**
    * Called during the tool loop to buffer a tool call + result pair.
-   * Buffered pairs are flushed to L1 summaries in afterTurn().
+   *
+   * Buffers the pair and triggers an inline L1 flush when the pending
+   * count reaches L1_INLINE_THRESHOLD (4). This keeps the pending buffer
+   * small during long tool-using responses, preventing context bloat and
+   * spreading the LLM summarization load across the tool loop instead of
+   * batching it all in afterTurn().
+   *
+   * Note: inline L3 compression (mild/aggressive/emergency) and MMD
+   * injection require access to the conversation messages array, which
+   * is managed internally by the AI SDK during generateText() — those
+   * features are not available here. Inline L1 flush is the practical
+   * equivalent: by converting tool pairs to compact summaries early,
+   * we reduce the storage footprint and accelerate L2 readiness.
    */
   async onToolCall(params: OnToolCallParams): Promise<void> {
     if (!this.enabled) return;
@@ -286,10 +298,25 @@ export class OffloadService {
     };
     manager.addToolPair(pair);
 
+    const pending = manager.getPendingCount();
+
+    // Estimate token impact of this tool result (rough: ~4 chars per token)
+    const resultStr = stringify(pair.result);
+    const resultTokens = Math.ceil(resultStr.length / 4);
+
     this.logger.debug?.(
       `[offload] onToolCall: userKey=${params.userKey}, tool=${params.toolName}, ` +
-      `callId=${params.toolCallId}, pending=${manager.getPendingCount()}`,
+      `callId=${params.toolCallId}, pending=${pending}, ` +
+      `resultEstTokens=${resultTokens}`,
     );
+
+    // ── Inline L1 flush: summarise buffered pairs early when threshold reached ──
+    if (this.config.l1Enabled && this.llmClient && pending >= L1_INLINE_THRESHOLD) {
+      this.logger.info(
+        `[offload] onToolCall: inline L1 flush triggered (pending=${pending} >= ${L1_INLINE_THRESHOLD})`,
+      );
+      await this.flushL1(manager);
+    }
   }
 
   /**
@@ -325,10 +352,18 @@ export class OffloadService {
     if (
       this.config.l15Enabled &&
       this.llmClient &&
-      l15Msgs &&
-      l15Msgs.trim().length > 0
+      l15Msgs.trim().length >= L15_MIN_CHARS_FOR_JUDGE
     ) {
       await this.judgeL15(manager, l15Msgs);
+    } else if (this.config.l15Enabled) {
+      // Short message: skip LLM call, just settle as short boundary
+      if (!manager.l15Settled) {
+        this.logger.debug?.(
+          `[offload] L1.5: skipping judge for short msg (${l15Msgs.length} chars < ${L15_MIN_CHARS_FOR_JUDGE})`,
+        );
+        manager.pushBoundary({ startIndex: manager.entryCounter, result: "short", targetMmd: null });
+        manager.l15Settled = true;
+      }
     }
 
     // Persist state.json (includes active MMD, counters, boundaries)
@@ -901,11 +936,22 @@ export class OffloadService {
 
 // ─── Constants ───────────────────────────────────────────────────────────
 
+/** Min user message chars before triggering L1.5 judge (avoids LLM call for "hi", "ok", etc). */
+const L15_MIN_CHARS_FOR_JUDGE = 20;
+
 /** Delay before L1.5 retry (ms). */
 const L15_RETRY_DELAY_MS = 3000;
 
 /** Max entries per L2 batch. */
 const L2_BATCH_SIZE = 30;
+
+/**
+ * Inline L1 flush threshold.
+ * When pending tool pairs reach this count in onToolCall(), they are
+ * flushed to L1 summaries immediately instead of waiting for afterTurn().
+ * Mirrors the library's after-tool-call hook force-trigger default (4).
+ */
+const L1_INLINE_THRESHOLD = 4;
 
 /** Data retention reclaim interval in ms (24 hours). */
 const RECLAIM_INTERVAL_MS = 24 * 60 * 60 * 1000;

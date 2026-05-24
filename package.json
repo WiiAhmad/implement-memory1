@@ -7,7 +7,8 @@
     "start": "bun run dist/index.js",
     "dev": "bun --watch index.ts",
     "build": "bun build index.ts --outdir dist --target bun --external node-llama-cpp",
-    "test": "bun test",
+    "test": "bun test --path-ignore-patterns 'TencentDB-Agent-Memory/**'",
+    "test:submodule": "cd TencentDB-Agent-Memory && npx vitest run",
     "postinstall": "bun install --cwd ./TencentDB-Agent-Memory"
   },
   "devDependencies": {

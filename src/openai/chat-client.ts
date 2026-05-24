@@ -1,5 +1,19 @@
-import OpenAI from "openai";
+/**
+ * Chat client using Vercel AI SDK (`ai` + `@ai-sdk/openai`).
+ *
+ * Uses `generateText` with "compatible" mode to support any OpenAI-compatible
+ * backend. The provider is created once in the constructor and cached for
+ * connection reuse across all chat calls.
+ */
+import { generateText, jsonSchema, type CoreMessage } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
 import type { ToolDefinition, ToolExecutor } from "../tools/tool-handler.ts";
+
+interface ChatClientLogger {
+  info?(message: string): void;
+  warn?(message: string): void;
+  error?(message: string): void;
+}
 
 /** A single message in a conversation history. */
 export interface ChatMessage {
@@ -43,18 +57,33 @@ export interface ChatClient {
 export class OpenAiChatClient implements ChatClient {
   /** Max tool call rounds per reply to prevent infinite loops. */
   private readonly MAX_TOOL_ROUNDS = 10;
+  private readonly timeoutMs: number;
+  private readonly provider: ReturnType<typeof createOpenAI>;
+  private readonly model: string;
+  private readonly logger?: ChatClientLogger;
 
   constructor(
-    private readonly client: OpenAI,
-    private readonly model: string,
-  ) {}
+    config: {
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      timeoutMs?: number;
+    },
+    logger?: ChatClientLogger,
+  ) {
+    this.model = config.model;
+    this.timeoutMs = config.timeoutMs ?? 30_000;
+    this.logger = logger;
+    this.provider = createOpenAI({
+      baseURL: config.baseUrl,
+      apiKey: config.apiKey,
+      compatibility: "compatible",
+    });
+  }
 
   async reply(params: ChatReplyParams): Promise<string> {
-    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
-
-    if (params.systemPrompt) {
-      messages.push({ role: "system", content: params.systemPrompt });
-    }
+    // ── Build messages ──
+    const messages: CoreMessage[] = [];
 
     if (params.previousMessages) {
       for (const msg of params.previousMessages) {
@@ -64,106 +93,86 @@ export class OpenAiChatClient implements ChatClient {
 
     messages.push({ role: "user", content: params.userPrompt });
 
-    // ── Build request ──
-    const requestParams: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
-      model: this.model,
-      messages,
-    };
-
-    if (params.tools && params.tools.length > 0) {
-      requestParams.tools = params.tools;
-    }
-
-    // ── Loop for tool calls ──
-    let toolRounds = this.MAX_TOOL_ROUNDS;
-
-    while (toolRounds > 0) {
-      toolRounds--;
-
-      const response = await this.client.chat.completions.create(requestParams);
-      const choice = response.choices[0];
-
-      if (!choice) {
-        throw new Error("OpenAI returned no choices");
+    // ── Convert tools to AI SDK format ──
+    const tools: Record<
+      string,
+      {
+        description: string;
+        inputSchema: ReturnType<typeof jsonSchema>;
+        execute: (
+          args: Record<string, unknown>,
+          options: { toolCallId: string },
+        ) => Promise<string>;
       }
+    > = {};
 
-      // ── Tool call path ──
-      if (choice.finish_reason === "tool_calls" && choice.message.tool_calls) {
-        // Guard: empty tool_calls array would cause an infinite loop
-        if (choice.message.tool_calls.length === 0) {
-          return choice.message.content?.trim() || "";
-        }
-
-        // Add the assistant's tool call message to history
-        const assistantMsg = choice.message as OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam;
-        messages.push(assistantMsg);
-
-        if (!params.executeTool) {
-          // No executor available — push error results for each tool call
-          for (const tc of choice.message.tool_calls) {
-            messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: "Tool execution is not available.",
-            } as OpenAI.Chat.Completions.ChatCompletionToolMessageParam);
-          }
-        } else {
-          // Execute each tool call and add the result
-          for (const tc of choice.message.tool_calls) {
-            if (tc.type !== 'function') {
-              messages.push({
-                role: "tool",
-                tool_call_id: tc.id,
-                content: `Unsupported tool call type: ${tc.type}`,
-              } as OpenAI.Chat.Completions.ChatCompletionToolMessageParam);
-              continue;
-            }
-
-            let args: Record<string, unknown> = {};
-            try {
-              args = JSON.parse(tc.function.arguments);
-            } catch {
-              args = {};
-            }
-
-            const result = await params.executeTool(tc.function.name, args);
-            messages.push({
-              role: "tool",
-              tool_call_id: tc.id,
-              content: result,
-            } as OpenAI.Chat.Completions.ChatCompletionToolMessageParam);
-
+    if (params.tools && params.tools.length > 0 && params.executeTool) {
+      for (const t of params.tools) {
+        const name = t.function.name;
+        tools[name] = {
+          description: t.function.description,
+          inputSchema: jsonSchema(t.function.parameters),
+          execute: async (args, { toolCallId }) => {
+            const result = await params.executeTool!(name, args);
             // Notify the onToolCallResult callback (fire-and-forget for offload)
             if (params.onToolCallResult) {
               void params.onToolCallResult({
-                toolName: tc.function.name,
-                toolCallId: tc.id,
+                toolName: name,
+                toolCallId,
                 params: args,
                 result,
               });
             }
-          }
-        }
-
-        // Continue the loop with updated messages
-        requestParams.messages = messages;
-        continue;
+            return result;
+          },
+        };
       }
-
-      // ── Text response path ──
-      const content = choice.message.content;
-      if (typeof content === "string" && content.trim()) {
-        return content.trim();
-      }
-
-      const refusal = choice.message.refusal?.trim();
-      if (refusal) {
-        return refusal;
-      }
-
-      throw new Error("OpenAI returned an empty reply");
     }
 
-    throw new Error("OpenAI exceeded maximum tool call rounds");
+    const hasTools = Object.keys(tools).length > 0;
+
+    // ── Log ──
+    const startedAt = Date.now();
+    this.logger?.info?.(
+      `[chat] >>> model=${this.model}, round=1, messages=${messages.length + (params.systemPrompt ? 1 : 0)}, timeout=${this.timeoutMs}ms`,
+    );
+
+    // ── Call LLM ──
+    try {
+      const result = await generateText({
+        model: this.provider.chat(this.model),
+        system: params.systemPrompt,
+        messages,
+        tools: hasTools ? tools : undefined,
+        maxSteps: hasTools ? this.MAX_TOOL_ROUNDS : 1,
+        abortSignal: AbortSignal.timeout(this.timeoutMs),
+      });
+
+      this.logger?.info?.(
+        `[chat] <<< round=1 (${Date.now() - startedAt}ms)`,
+      );
+
+      const text = result.text?.trim() ?? "";
+
+      if (text) {
+        return text;
+      }
+
+      // If text is empty, check finishReason for more context
+      if (result.finishReason === "content-filter" || result.finishReason === "error") {
+        return text;
+      }
+
+      throw new Error("LLM returned an empty reply");
+    } catch (error) {
+      this.logger?.error?.(
+        `[chat] FAILED round=1 (${Date.now() - startedAt}ms): ${this.formatError(error)}`,
+      );
+      throw error;
+    }
+  }
+
+  private formatError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ChatService } from "./chat-service.ts";
 import type { MemoryAdapter } from "../memory/types.ts";
 import type { ChatClient, ChatMessage, ChatReplyParams } from "../openai/chat-client.ts";
+import type { OffloadService } from "../offload/index.ts";
 
 const noopLogger = {
   info() {},
@@ -49,6 +50,9 @@ describe("ChatService", () => {
       userPrompt: "Known fact: the user likes short answers.\n\nHi",
       previousMessages: [] as ChatMessage[],
     });
+    expect(calls).toEqual(["recall", "reply"]);
+
+    await waitForBackgroundTasks();
     expect(calls).toEqual(["recall", "reply", "capture"]);
   });
 
@@ -204,14 +208,17 @@ describe("ChatService", () => {
     expect(historyLengths[14]).toBe(20);
   })
 
-  test("returns the reply even when memory capture fails", async () => {
+  test("returns the reply without waiting for memory capture", async () => {
+    let resolveCapture: (() => void) | null = null;
     const memory: MemoryAdapter = {
       recall: async () => ({
         prependContext: "",
         appendSystemContext: "",
       }),
       capture: async () => {
-        throw new Error("capture unavailable");
+        await new Promise<void>((resolve) => {
+          resolveCapture = resolve;
+        });
       },
       close: async () => {},
     };
@@ -224,5 +231,47 @@ describe("ChatService", () => {
     const result = await service.replyToUser({ telegramUserId: 7, text: "plain message" });
 
     expect(result).toBe("still works");
+    await waitForBackgroundTasks();
+    resolveCapture?.();
+  });
+
+  test("returns the reply without waiting for offload afterTurn", async () => {
+    let resolveAfterTurn: (() => void) | null = null;
+    let afterTurnStarted = false;
+    const memory: MemoryAdapter = {
+      recall: async () => ({
+        prependContext: "",
+        appendSystemContext: "",
+      }),
+      capture: async () => {},
+      close: async () => {},
+    };
+
+    const chatClient: ChatClient = {
+      reply: async () => "fast reply",
+    };
+
+    const offloadService = {
+      beforeTurn: async ({ previousMessages }: { previousMessages: unknown[] }) => previousMessages,
+      afterTurn: async () => {
+        afterTurnStarted = true;
+        await new Promise<void>((resolve) => {
+          resolveAfterTurn = resolve;
+        });
+      },
+      onToolCall: async () => {},
+    } as unknown as OffloadService;
+
+    const service = new ChatService({ memory, chatClient, logger: noopLogger, offloadService });
+    const result = await service.replyToUser({ telegramUserId: 7, text: "plain message" });
+
+    expect(result).toBe("fast reply");
+    await waitForBackgroundTasks();
+    expect(afterTurnStarted).toBe(true);
+    resolveAfterTurn?.();
   });
 });
+
+function waitForBackgroundTasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
