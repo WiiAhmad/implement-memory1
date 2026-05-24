@@ -64,6 +64,35 @@ export interface ChatClient {
   reply(params: ChatReplyParams): Promise<string>;
 }
 
+type ChatResponseChoice = {
+  message?: {
+    content?: string | null;
+    tool_calls?: Array<{
+      id: string;
+      type?: string;
+      function: {
+        name: string;
+        arguments: string;
+      };
+    }>;
+  };
+  finish_reason?: string | null;
+};
+
+type ResponsesApiOutputItem = {
+  type?: string;
+  content?: Array<{
+    type?: string;
+    text?: string;
+  }>;
+};
+
+type CompatibleChatResponse = {
+  choices?: ChatResponseChoice[];
+  output_text?: string;
+  output?: ResponsesApiOutputItem[];
+};
+
 export class OpenAiChatClient implements ChatClient {
   /** Max tool call rounds per reply to prevent infinite loops. */
   private readonly MAX_TOOL_ROUNDS = 10;
@@ -143,19 +172,32 @@ export class OpenAiChatClient implements ChatClient {
           `[chat] <<< round=${step} (${Date.now() - startedAt}ms)`,
         );
 
-        const choice = response.choices[0];
+        const compatibleResponse = response as CompatibleChatResponse;
+        const choice = compatibleResponse.choices?.[0];
+        const responseText = this.extractResponseText(compatibleResponse);
+        if (!choice && responseText) {
+          return responseText.trim();
+        }
+
         if (!choice) {
-          throw new Error("No response choices returned");
+          throw new Error(
+            `No response choices returned; response keys: ${this.formatResponseKeys(response)}`,
+          );
         }
 
         const message = choice.message;
+        if (!message) {
+          throw new Error(
+            `No assistant message returned; response keys: ${this.formatResponseKeys(response)}`,
+          );
+        }
 
         // ── Push assistant message to conversation ──
         // We reconstruct the message to avoid passing back the raw object
         // which may have extra SDK-internal properties.
         const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
           role: "assistant",
-          content: message.content,
+          content: message.content ?? null,
         };
         if (message.tool_calls && message.tool_calls.length > 0) {
           assistantMsg.tool_calls = message.tool_calls.map((tc) => ({
@@ -238,5 +280,31 @@ export class OpenAiChatClient implements ChatClient {
 
   private formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  private extractResponseText(response: CompatibleChatResponse): string | null {
+    if (typeof response.output_text === "string") {
+      return response.output_text;
+    }
+
+    if (!Array.isArray(response.output)) {
+      return null;
+    }
+
+    const text = response.output
+      .flatMap((item) => item.content ?? [])
+      .map((content) => content.text)
+      .filter((text): text is string => typeof text === "string")
+      .join("");
+
+    return text || null;
+  }
+
+  private formatResponseKeys(response: unknown): string {
+    if (!response || typeof response !== "object") {
+      return "(non-object response)";
+    }
+
+    return Object.keys(response).join(", ") || "(no keys)";
   }
 }

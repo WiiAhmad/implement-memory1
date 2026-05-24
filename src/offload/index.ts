@@ -18,7 +18,9 @@ import type { OffloadConfig, OffloadEntry, ToolPair } from "./types.ts";
 import { configureL3TokenTracker, compressSession } from "./compressor.ts";
 import type { CompressionResult } from "./compressor.ts";
 import { join } from "node:path";
-import { readOffloadEntries, toOffloadSessionKey, appendOffloadEntries, listMmds, readMmd, writeMmd, patchMmd, readAllOffloadEntries, rewriteAllOffloadEntries } from "./storage.ts";
+import { mkdir, writeFile } from "node:fs/promises";
+import OpenAI from "openai";
+import { readOffloadEntries, toOffloadSessionKey, appendOffloadEntries, listMmds, readMmd, writeMmd, patchMmd, readAllOffloadEntries, rewriteAllOffloadEntries, writeRefMd, sanitizeText } from "./storage.ts";
 import { SessionRegistry } from "./state-manager.ts";
 import type { OffloadStateManager } from "./state-manager.ts";
 import { createLocalLlmClient } from "./llm-client.ts";
@@ -76,11 +78,22 @@ export interface AfterTurnParams {
   userText: string;
 }
 
+export interface CreateSkillCommand {
+  mmdName: string | null;
+  skillFocus: string | null;
+}
+
 export class OffloadService {
   private readonly enabled: boolean;
   private readonly config: OffloadConfig;
   private readonly logger: Logger;
   private readonly getDataDir: () => string;
+  private readonly l4ClientConfig: {
+    baseUrl: string;
+    apiKey: string;
+    model: string | undefined;
+    temperature: number;
+  };
 
   /** Session registry: userKey → OffloadStateManager with LRU eviction (max 20). */
   private sessionRegistry: SessionRegistry | null = null;
@@ -98,13 +111,19 @@ export class OffloadService {
   /** Data retention reclaim timer (24h interval, null when disabled). */
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
   /** Retention days for offload data (0 = disabled). */
-  private readonly retentionDays: number;
+  private retentionDays = 0;
 
   constructor(opts: OffloadServiceOptions) {
     this.enabled = opts.enabled;
     this.config = opts.config;
     this.logger = opts.logger;
     this.getDataDir = opts.getDataDir;
+    this.l4ClientConfig = {
+      baseUrl: opts.baseUrl,
+      apiKey: opts.apiKey,
+      model: opts.config.model,
+      temperature: opts.config.temperature,
+    };
 
     if (this.enabled) {
       const dataDir = opts.getDataDir();
@@ -172,6 +191,123 @@ export class OffloadService {
       this.logger.warn(`[offload] failed to resolve session for ${userKey}: ${err}`);
       return null;
     }
+  }
+
+  /**
+   * Handle `/create-skill [mmd-name] [focus...]`.
+   *
+   * L4 was originally wired only in the OpenClaw plugin before-agent-start hook.
+   * The Telegram bot has its own lifecycle, so it needs an explicit command
+   * entry point that reads local MMD/offload state and calls the local LLM.
+   */
+  async createSkillFromCommand(userKey: string, userText: string): Promise<string | null> {
+    const command = parseCreateSkillCommand(userText);
+    if (!command) return null;
+
+    if (!this.enabled) {
+      return "L4 skill generation is unavailable because offload is disabled.";
+    }
+
+    const manager = await this.getOrCreateManager(userKey);
+    if (!manager) {
+      return "L4 skill generation failed: no offload session is available.";
+    }
+
+    if (!this.l4ClientConfig.baseUrl || !this.l4ClientConfig.apiKey || !this.l4ClientConfig.model) {
+      return "L4 skill generation requires an offload model. Set `OFFLOAD_MODEL` or `MODEL` and restart the bot.";
+    }
+
+    try {
+      const allMmds = await listMmds(manager.ctx);
+      const mmdFilename = selectMmdFilename(allMmds, manager.getActiveMmdFile(), command.mmdName);
+      if (!mmdFilename) {
+        return command.mmdName
+          ? `No MMD file matched "${command.mmdName}". Available MMDs: ${allMmds.length ? allMmds.join(", ") : "(none)"}`
+          : `No active or generated MMD file is available yet. L4 needs L2 to generate an MMD first.`;
+      }
+
+      const mmdContent = await readMmd(manager.ctx, mmdFilename);
+      if (!mmdContent?.trim()) {
+        return `MMD file "${mmdFilename}" is empty or unreadable.`;
+      }
+
+      const allEntries = await readAllOffloadEntries(manager.ctx, this.logger);
+      const nodeIds = extractNodeIds(mmdContent);
+      const filteredEntries = nodeIds.size > 0
+        ? allEntries.filter((entry) => typeof entry.node_id === "string" && nodeIds.has(entry.node_id))
+        : allEntries;
+
+      this.logger.info(
+        `[offload] L4: generating skill from ${mmdFilename}, entries=${filteredEntries.length}, focus=${command.skillFocus ?? "null"}`,
+      );
+
+      const resp = await this.generateL4Skill({
+        mmdFilename,
+        mmdContent,
+        offloadEntries: filteredEntries,
+        skillFocus: command.skillFocus,
+      });
+
+      const skillName = sanitizeSkillName(resp.skillName);
+      const skillsDir = join(manager.ctx.dataDir, "skills", skillName);
+      const skillPath = join(skillsDir, "SKILL.md");
+      await mkdir(skillsDir, { recursive: true });
+      await writeFile(skillPath, resp.skillContent, "utf-8");
+
+      this.logger.info(`[offload] L4: wrote skill ${skillName} to ${skillPath}`);
+
+      return [
+        "Skill generation complete.",
+        "",
+        `Skill name: ${skillName}`,
+        `Description: ${resp.skillDescription}`,
+        `File path: ${skillPath}`,
+      ].join("\n");
+    } catch (err) {
+      this.logger.error(`[offload] L4 failed: ${err}`);
+      return `L4 skill generation failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  private async generateL4Skill(req: {
+    mmdFilename: string;
+    mmdContent: string;
+    offloadEntries: OffloadEntry[];
+    skillFocus: string | null;
+  }): Promise<{ skillName: string; skillDescription: string; skillContent: string }> {
+    const client = new OpenAI({
+      baseURL: this.l4ClientConfig.baseUrl,
+      apiKey: this.l4ClientConfig.apiKey,
+    });
+
+    const startedAt = Date.now();
+    const userPrompt = buildL4UserPrompt(req);
+    this.logger.info(
+      `[offload] L4 >>> model=${this.l4ClientConfig.model}, mmd=${req.mmdFilename}, entries=${req.offloadEntries.length}, prompt=${userPrompt.length} chars`,
+    );
+
+    const response = await client.chat.completions.create(
+      {
+        model: this.l4ClientConfig.model!,
+        temperature: this.l4ClientConfig.temperature,
+        messages: [
+          { role: "system", content: L4_SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+        ],
+      },
+      { signal: AbortSignal.timeout(120_000) },
+    );
+
+    const raw = response.choices?.[0]?.message?.content ?? "";
+    const parsed = parseL4Response(raw);
+    if (!parsed) {
+      throw new Error(`L4 response parsing failed (${raw.length} chars)`);
+    }
+
+    this.logger.info(
+      `[offload] L4 <<< skill=${parsed.skillName}, content=${parsed.skillContent.length} chars (${Date.now() - startedAt}ms)`,
+    );
+    return parsed;
   }
 
   /**
@@ -449,6 +585,8 @@ export class OffloadService {
     if (!manager) return;
 
     // ── Flush L1 tool pairs ────────────────────────────────────────
+    const boundaryStartIndex = manager.entryCounter;
+
     if (this.config.l1Enabled && manager.hasPending()) {
       await this.flushL1(manager);
     }
@@ -463,14 +601,14 @@ export class OffloadService {
       this.llmClient &&
       l15Msgs.trim().length >= L15_MIN_CHARS_FOR_JUDGE
     ) {
-      await this.judgeL15(manager, l15Msgs);
+      await this.judgeL15(manager, l15Msgs, boundaryStartIndex);
     } else if (this.config.l15Enabled) {
       // Short message: skip LLM call, just settle as short boundary
       if (!manager.l15Settled) {
         this.logger.debug?.(
           `[offload] L1.5: skipping judge for short msg (${l15Msgs.length} chars < ${L15_MIN_CHARS_FOR_JUDGE})`,
         );
-        manager.pushBoundary({ startIndex: manager.entryCounter, result: "short", targetMmd: null });
+        manager.pushBoundary({ startIndex: boundaryStartIndex, result: "short", targetMmd: null });
         manager.l15Settled = true;
       }
     }
@@ -517,6 +655,20 @@ export class OffloadService {
       result: p.result,
       timestamp: p.timestamp,
     }));
+
+    const refByToolCallId = new Map<string, string>();
+    for (const p of pairs) {
+      try {
+        const resultStr = typeof p.result === "string"
+          ? sanitizeText(p.result)
+          : sanitizeText(JSON.stringify(p.result, null, 2));
+        const content = `**Tool:** ${p.toolName}\n**Call ID:** ${p.toolCallId}\n\n**Result:**\n\`\`\`\n${resultStr}\n\`\`\``;
+        const refPath = await writeRefMd(manager.ctx, p.timestamp, p.toolName, content);
+        refByToolCallId.set(p.toolCallId, refPath);
+      } catch (err) {
+        this.logger.warn(`[offload] flushL1: ref write failed for ${p.toolCallId}: ${err}`);
+      }
+    }
 
     // Try to summarise via LLM (up to 3 retries)
     const llmClient = this.llmClient;
@@ -567,7 +719,7 @@ export class OffloadService {
         summary: truncate(stringify(p.result), 2000),
         timestamp: p.timestamp,
         node_id: null,
-        result_ref: "",
+        result_ref: refByToolCallId.get(p.toolCallId) ?? "",
         score: 0,
       }));
     }
@@ -580,7 +732,7 @@ export class OffloadService {
       summary: e.summary ?? "",
       timestamp: e.timestamp ?? new Date().toISOString(),
       node_id: e.node_id ?? null,
-      result_ref: e.result_ref ?? "",
+      result_ref: e.result_ref || refByToolCallId.get(e.tool_call_id) || "",
       score: e.score ?? 0,
     }));
 
@@ -610,8 +762,11 @@ export class OffloadService {
    *   - Short boundary pushed → entries won't pollute future L2
    *   - l15Settled = true → L2 can proceed with caution
    */
-  private async judgeL15(manager: OffloadStateManager, recentMessages: string): Promise<void> {
-    const startIndex = manager.entryCounter;
+  private async judgeL15(
+    manager: OffloadStateManager,
+    recentMessages: string,
+    startIndex: number,
+  ): Promise<void> {
     this.logger.info(
       `[offload] L1.5: judging task boundary (startIndex=${startIndex}, ` +
       `activeMmd=${manager.getActiveMmdFile() ?? "null"})`,
@@ -1098,6 +1253,129 @@ const L1_INLINE_THRESHOLD = 4;
 const RECLAIM_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 // ─── Helpers ────────────────────────────────────────────────────────────
+
+const L4_SYSTEM_PROMPT = `You generate Codex skill documents from completed task context.
+
+Return only valid JSON with this exact shape:
+{
+  "skillName": "kebab-case-directory-name",
+  "skillDescription": "one sentence description",
+  "skillContent": "# Skill Name\\n\\n..."
+}
+
+The skillContent must be a complete SKILL.md. Include when to use the skill, concrete workflow steps, constraints, edge cases, and verification steps. Keep it reusable and do not include private credentials or irrelevant chat history.`;
+
+function parseCreateSkillCommand(prompt: string): CreateSkillCommand | null {
+  if (typeof prompt !== "string") return null;
+  const trimmed = prompt.trim();
+  const match = trimmed.match(/^\/create-skill(?:\s+(.*))?$/i);
+  if (!match) return null;
+
+  const args = (match[1] || "").trim();
+  if (!args) return { mmdName: null, skillFocus: null };
+
+  const parts = args.split(/\s+/);
+  return {
+    mmdName: parts[0] || null,
+    skillFocus: parts.slice(1).join(" ") || null,
+  };
+}
+
+function selectMmdFilename(
+  allMmds: string[],
+  activeMmd: string | null,
+  requestedName: string | null,
+): string | null {
+  if (requestedName) {
+    const needle = requestedName.toLowerCase();
+    return allMmds.find((f) => f.toLowerCase() === needle)
+      ?? allMmds.find((f) => f.toLowerCase().includes(needle))
+      ?? null;
+  }
+
+  if (activeMmd && allMmds.includes(activeMmd)) return activeMmd;
+  return allMmds.length > 0 ? allMmds[allMmds.length - 1]! : null;
+}
+
+function extractNodeIds(mmdContent: string): Set<string> {
+  const ids = new Set<string>();
+  const nodeIdPattern = /\b(\d{3}-N\d+)\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = nodeIdPattern.exec(mmdContent)) !== null) {
+    ids.add(match[1]!);
+  }
+  return ids;
+}
+
+function buildL4UserPrompt(req: {
+  mmdFilename: string;
+  mmdContent: string;
+  offloadEntries: OffloadEntry[];
+  skillFocus: string | null;
+}): string {
+  const entries = req.offloadEntries.map((e, idx) => ({
+    index: idx + 1,
+    tool_call_id: e.tool_call_id,
+    node_id: e.node_id,
+    tool_call: e.tool_call,
+    summary: e.summary,
+    timestamp: e.timestamp,
+  }));
+
+  return JSON.stringify({
+    mmdFilename: req.mmdFilename,
+    skillFocus: req.skillFocus,
+    mmdContent: req.mmdContent,
+    offloadEntries: entries,
+  }, null, 2);
+}
+
+function parseL4Response(
+  raw: string,
+): { skillName: string; skillDescription: string; skillContent: string } | null {
+  const jsonText = extractJson(raw);
+  if (!jsonText) return null;
+
+  try {
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+    if (
+      typeof parsed.skillName !== "string" ||
+      typeof parsed.skillDescription !== "string" ||
+      typeof parsed.skillContent !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      skillName: parsed.skillName,
+      skillDescription: parsed.skillDescription,
+      skillContent: parsed.skillContent,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractJson(raw: string): string | null {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) return fenced[1].trim();
+
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  return trimmed.slice(start, end + 1);
+}
+
+function sanitizeSkillName(name: string): string {
+  const cleaned = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return cleaned || `generated-skill-${Date.now()}`;
+}
 
 function stringify(value: unknown): string {
   if (value == null) return "";

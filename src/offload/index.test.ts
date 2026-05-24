@@ -10,10 +10,11 @@
  * - Edge cases: rapid calls, empty sessions, shutdown during operations
  */
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { mkdtemp, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { OffloadService } from "./index.ts";
+import { readOffloadEntries } from "./storage.ts";
 import type { OffloadConfig } from "./types.ts";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -375,6 +376,61 @@ describe("enabled service", () => {
       userKey: testUserKey,
       userText: "Hi",
     });
+  });
+
+  test("L1.5 boundary covers entries flushed in the same turn", async () => {
+    const boundaryUserKey = "tg:user:boundary-test";
+    const service = createEnabled({
+      model: "test-model",
+      l1Enabled: true,
+      l15Enabled: true,
+      l2Enabled: false,
+    });
+
+    (service as any).llmClient = {
+      l1Summarize: async () => ({
+        entries: [
+          {
+            tool_call_id: "call_boundary",
+            tool_call: "search({})",
+            summary: "Found relevant implementation details.",
+            timestamp: new Date().toISOString(),
+            node_id: null,
+            result_ref: "",
+            score: 0.5,
+          },
+        ],
+      }),
+      l15Judge: async () => ({
+        taskCompleted: false,
+        isContinuation: false,
+        isLongTask: true,
+        newTaskLabel: "debug-boundary",
+      }),
+    };
+
+    await service.onToolCall({
+      userKey: boundaryUserKey,
+      toolName: "search",
+      toolCallId: "call_boundary",
+      params: {},
+      result: "Found relevant implementation details.",
+    });
+
+    await service.afterTurn({
+      userKey: boundaryUserKey,
+      userText: "Debug why MMD generation does not include current turn entries.",
+    });
+
+    const manager = await (service as any).getOrCreateManager(boundaryUserKey);
+    const entries = await readOffloadEntries(manager.ctx);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.result_ref).not.toBe("");
+    expect((await readdir(manager.ctx.refsDir)).length).toBeGreaterThan(0);
+    expect(manager.resolveEntryBoundary(0)?.startIndex).toBe(0);
+    expect(manager.resolveEntryBoundary(0)?.result).toBe("long");
+    expect(manager.resolveEntryBoundary(0)?.targetMmd).toBe(manager.getActiveMmdFile());
   });
 
   test("rapid consecutive beforeTurn calls work", async () => {

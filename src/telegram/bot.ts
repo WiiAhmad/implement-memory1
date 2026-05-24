@@ -45,7 +45,7 @@ export function createBot(deps: {
       }
 
       await ctx.reply(
-        "A fresh verification code has been issued. Check the server logs for your 6-digit code and send it here.",
+        "A fresh verification code has been issued. Check the server logs for your code and send it here.",
       );
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

@@ -117,6 +117,50 @@ describe("OpenAiChatClient", () => {
     ]);
   });
 
+  test("handles compatible Responses-style output_text without choices", async () => {
+    mock.module("openai", () => ({
+      default: class OpenAI {
+        chat = {
+          completions: {
+            create: async () => ({
+              id: "resp_test_id",
+              object: "response",
+              model: "gpt-5.4-mini",
+              output_text: "  Hello from Responses.  ",
+            }),
+          },
+        };
+        constructor(_config: Record<string, unknown>) {}
+      },
+    }));
+
+    const client = createClient();
+    const reply = await client.reply({ userPrompt: "test" });
+    expect(reply).toBe("Hello from Responses.");
+  });
+
+  test("reports malformed compatible responses without crashing on choices access", async () => {
+    mock.module("openai", () => ({
+      default: class OpenAI {
+        chat = {
+          completions: {
+            create: async () => ({
+              id: "resp_test_id",
+              object: "response",
+              model: "gpt-5.4-mini",
+            }),
+          },
+        };
+        constructor(_config: Record<string, unknown>) {}
+      },
+    }));
+
+    const client = createClient();
+    await expect(
+      client.reply({ userPrompt: "test" }),
+    ).rejects.toThrow("No response choices returned");
+  });
+
   test("passes timeout from config", () => {
     const client = createClient(45_000);
     expect(client).toBeDefined();

@@ -27,6 +27,8 @@ export {
   updateOffloadNodeIds,
   rewriteAllOffloadEntries,
   patchMmd,
+  writeRefMd,
+  sanitizeText,
 } from "../../TencentDB-Agent-Memory/src/offload/storage.ts";
 
 export type { StorageContext } from "../../TencentDB-Agent-Memory/src/offload/storage.ts";
