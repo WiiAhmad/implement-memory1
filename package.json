@@ -7,8 +7,7 @@
     "start": "bun run dist/index.js",
     "dev": "bun --watch index.ts",
     "build": "bun build index.ts --outdir dist --target bun --external node-llama-cpp",
-    "test": "bun test --path-ignore-patterns 'TencentDB-Agent-Memory/**'",
-    "test:submodule": "cd TencentDB-Agent-Memory && npx vitest run",
+    "test": "bun test",
     "postinstall": "bun install --cwd ./TencentDB-Agent-Memory"
   },
   "devDependencies": {
@@ -18,12 +17,10 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.65",
     "@grammyjs/conversations": "^2.1.1",
     "@grammyjs/parse-mode": "^2.3.0",
     "@node-rs/jieba": "^2.0.1",
     "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
-    "ai": "^6.0.164",
     "better-sqlite3": "^12.10.0",
     "grammy": "^1.43.0",
     "js-tiktoken": "^1.0.18",

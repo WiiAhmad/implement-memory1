@@ -178,17 +178,18 @@ export class OffloadService {
    * Called before the LLM reply. Compresses conversation history
    * if above configured thresholds using library L3 algorithms.
    *
+   * Honors the `_forceEmergencyNext` flag set by reportTokenOverflow():
+   * if a previous turn hit a context-length error, emergency compression
+   * is forced regardless of current token utilisation.
+   *
    * Flow:
    *   1. Resolve an OffloadStateManager for the user (creates on first access)
-   *   2. Read L1 offload entries from JSONL storage via the manager's ctx
-   *   3. Run L3 compression orchestrator (mild/aggressive/emergency tiers)
-   *   4. Log compression stats
-   *   5. Return the (possibly modified) messages array
-   *
-   * No-op case: if no offload entries exist (no tool calls yet), the offload
-   * lookup map is empty, so mild compression is a no-op. Aggressive and
-   * emergency compression still work because they operate on message count
-   * and tokens, not on offload entries.
+   *   2. Check and clear the force-emergency flag
+   *   3. Read L1 offload entries from JSONL storage via the manager's ctx
+   *   4. Run L3 compression orchestrator (mild/aggressive/emergency tiers)
+   *   5. Log compression stats
+   *   6. Inject active MMD into messages
+   *   7. Return the (possibly modified) messages array
    *
    * Returns the (possibly modified) messages array.
    */
@@ -203,24 +204,37 @@ export class OffloadService {
 
     const manager = await this.getOrCreateManager(userKey);
     if (!manager) {
-      this.logger.debug?.(`[offload] beforeTurn: no manager for ${userKey}, skipping compression`);
+      this.logger.debug?.(`[offload] beforeTurn: no manager for ${userKey}, skipping`);
       return previousMessages;
     }
 
     this.logger.debug?.(`[offload] beforeTurn: userKey=${userKey}, msgs=${previousMessages.length}`);
 
+    // ── Check for pending force-emergency flag (set by reportTokenOverflow) ──
+    const forceEmergency = manager._forceEmergencyNext === true;
+    if (forceEmergency) {
+      manager._forceEmergencyNext = false;
+      this.logger.warn(
+        `[offload] beforeTurn: force-emergency flag set — will force emergency compression`,
+      );
+    }
+
     try {
       // 2. Read L1 offload entries from JSONL via the manager's StorageContext
-      //    When empty (no tool calls yet), mild compression is a no-op.
       const offloadEntries: OffloadEntry[] = await readOffloadEntries(manager.ctx);
 
-      // 3. Run L3 compression orchestrator with the state manager
+      // 3. Run L3 compression orchestrator with force-emergency flag
       const result: CompressionResult = await compressSession(
         previousMessages,
         offloadEntries,
-        this.config,
-        manager, // Pass OffloadStateManager for aggressive/emergency state tracking
-        this.logger, // Logger satisfies PluginLogger structurally
+        {
+          ...this.config,
+          // When force-emergency is set, lower the emergency threshold to 0
+          // so compressor.ts triggers emergency compression immediately.
+          emergencyCompressRatio: forceEmergency ? 0 : this.config.emergencyCompressRatio,
+        },
+        manager,
+        this.logger,
       );
 
       // 4. Log compression stats
@@ -232,11 +246,12 @@ export class OffloadService {
           `utilisation=${(result.utilisation * 100).toFixed(1)}%, ` +
           `mild=${result.mildApplied ? `${result.mildReplacedCount} replaced` : "no"}, ` +
           `aggressive=${result.aggressiveApplied ? `${result.aggressiveDeletedCount} deleted` : "no"}, ` +
-          `emergency=${result.emergencyApplied ? `${result.emergencyDeletedCount} deleted` : "no"}`,
+          `emergency=${result.emergencyApplied ? `${result.emergencyDeletedCount} deleted` : "no"}` +
+          (forceEmergency ? " (forced)" : ""),
         );
       } else if (result.tokensBefore > 0) {
         this.logger.debug?.(
-          `[offload] beforeTurn: no compression needed (${result.tokensBefore} tokens, ${result.utilisation * 100}% utilisation)`,
+          `[offload] beforeTurn: no compression needed (${result.tokensBefore} tokens)`,
         );
       }
 
@@ -262,7 +277,6 @@ export class OffloadService {
       return finalMessages;
     } catch (err) {
       this.logger.error(`[offload] beforeTurn compression failed: ${err}`);
-      // On failure, return original messages so the conversation continues
       return previousMessages;
     }
   }
@@ -272,16 +286,7 @@ export class OffloadService {
    *
    * Buffers the pair and triggers an inline L1 flush when the pending
    * count reaches L1_INLINE_THRESHOLD (4). This keeps the pending buffer
-   * small during long tool-using responses, preventing context bloat and
-   * spreading the LLM summarization load across the tool loop instead of
-   * batching it all in afterTurn().
-   *
-   * Note: inline L3 compression (mild/aggressive/emergency) and MMD
-   * injection require access to the conversation messages array, which
-   * is managed internally by the AI SDK during generateText() — those
-   * features are not available here. Inline L1 flush is the practical
-   * equivalent: by converting tool pairs to compact summaries early,
-   * we reduce the storage footprint and accelerate L2 readiness.
+   * small during long tool-using responses.
    */
   async onToolCall(params: OnToolCallParams): Promise<void> {
     if (!this.enabled) return;
@@ -316,6 +321,110 @@ export class OffloadService {
         `[offload] onToolCall: inline L1 flush triggered (pending=${pending} >= ${L1_INLINE_THRESHOLD})`,
       );
       await this.flushL1(manager);
+    }
+  }
+
+  /**
+   * Called after each step of the manual tool loop in chat-client.ts.
+   * Receives the current conversation messages array and runs inline
+   * L3 compression + MMD injection to prevent context bloat during
+   * long tool-using turns.
+   *
+   * The messages are modified in-place by compressSession() and
+   * injectMmdIntoMessages(), so the modified array flows back to the
+   * next LLM call automatically.
+   *
+   * Flow:
+   *   1. Convert messages to OpenAI format (compressor-friendly)
+   *   2. Read offload entries for mild compression
+   *   3. Run L3 compression (mild/aggressive/emergency)
+   *   4. Inject active MMD into messages
+   *   5. Log compression stats
+   */
+  async onStepFinish(messages: unknown[], userKey: string): Promise<void> {
+    const startedAt = Date.now();
+    if (!this.enabled) return;
+    if (!messages || messages.length < 2) return;
+
+    const manager = await this.getOrCreateManager(userKey);
+    if (!manager) {
+      this.logger.debug?.(`[offload] onStepFinish: no manager for ${userKey}, skipping`);
+      return;
+    }
+
+    try {
+      // 1. Normalise to OpenAI format for compressor compatibility
+      const formatStartedAt = Date.now();
+      ensureOpenAIFormat(messages);
+      const formatDuration = Date.now() - formatStartedAt;
+
+      // 2. Read offload entries from JSONL
+      const readEntriesStartedAt = Date.now();
+      const offloadEntries: OffloadEntry[] = await readOffloadEntries(manager.ctx);
+      const readEntriesDuration = Date.now() - readEntriesStartedAt;
+
+      // 3. Run L3 compression
+      const compressStartedAt = Date.now();
+      const result: CompressionResult = await compressSession(
+        messages,
+        offloadEntries,
+        this.config,
+        manager,
+        this.logger,
+      );
+      const compressDuration = Date.now() - compressStartedAt;
+
+      // 4. Log compression stats + timing
+      if (result.tokensBefore > 0 && result.tokensBefore !== result.tokensAfter) {
+        const savedPct = (
+          (result.tokensBefore - result.tokensAfter) / result.tokensBefore * 100
+        ).toFixed(1);
+        this.logger.info(
+          `[offload] onStepFinish: ${result.tokensBefore}→${result.tokensAfter} tokens ` +
+          `(saved ${savedPct}%), ` +
+          `mild=${result.mildApplied ? `${result.mildReplacedCount} replaced` : "no"}, ` +
+          `aggressive=${result.aggressiveApplied ? `${result.aggressiveDeletedCount} deleted` : "no"}, ` +
+          `emergency=${result.emergencyApplied ? `${result.emergencyDeletedCount} deleted` : "no"}` +
+          ` [compress=${compressDuration}ms]`,
+        );
+      } else if (result.tokensBefore > 0) {
+        this.logger.debug?.(
+          `[offload] onStepFinish: no compression needed (${result.tokensBefore} tokens) [compress=${compressDuration}ms]`,
+        );
+      }
+
+      // 5. Inject active MMD into messages (if available)
+      if (this.config.l2Enabled && this.llmClient) {
+        try {
+          const mmdStartedAt = Date.now();
+          const mmdResult = await injectMmdIntoMessages(
+            messages,
+            manager,
+            this.logger,
+            () => this.config.contextWindow,
+            this._toPluginConfig(),
+          );
+          const mmdDuration = Date.now() - mmdStartedAt;
+          if (mmdResult.mmdTokens > 0) {
+            this.logger.info(
+              `[offload] onStepFinish: injected active MMD (${mmdResult.mmdTokens} tokens) [mmd=${mmdDuration}ms]`,
+            );
+          }
+        } catch (mmdErr) {
+          this.logger.warn(`[offload] onStepFinish: MMD injection failed: ${mmdErr}`);
+        }
+      }
+
+      const totalDuration = Date.now() - startedAt;
+      this.logger.info(
+        `[timing] offload.onStepFinish: total=${totalDuration}ms, ` +
+        `format=${formatDuration}ms, readEntries=${readEntriesDuration}ms, ` +
+        `compress=${compressDuration}ms (user=${userKey})`,
+      );
+    } catch (err) {
+      const totalDuration = Date.now() - startedAt;
+      // Catch-all: log and continue — don't crash the tool loop
+      this.logger.warn(`[offload] onStepFinish: inline compression failed after ${totalDuration}ms: ${err}`);
     }
   }
 
@@ -510,14 +619,17 @@ export class OffloadService {
 
     if (await this.attemptL15(manager, recentMessages, startIndex)) return;
 
-    // Single retry after brief delay
-    this.logger.info("[offload] L1.5: retrying (1/1)...");
-    await this.sleep(L15_RETRY_DELAY_MS);
-    if (manager.l15Settled) return; // Already settled by another path
+    // Retry up to 3 times after brief delay
+    const L15_MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= L15_MAX_RETRIES; attempt++) {
+      this.logger.info(`[offload] L1.5: retrying (${attempt}/${L15_MAX_RETRIES})...`);
+      await this.sleep(L15_RETRY_DELAY_MS);
+      if (manager.l15Settled) return; // Already settled by another path
 
-    if (await this.attemptL15(manager, recentMessages, startIndex)) return;
+      if (await this.attemptL15(manager, recentMessages, startIndex)) return;
+    }
 
-    // Both attempts failed — activate fail-safe
+    // All attempts failed — activate fail-safe
     await this.l15FailSafe(manager, startIndex);
   }
 
@@ -636,6 +748,35 @@ export class OffloadService {
   /** Simple sleep helper. */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Report a token overflow / context-length error to the offload service.
+   * Sets the _forceEmergencyNext flag on the session's state manager so that
+   * the next beforeTurn() call forces emergency compression regardless of
+   * current token utilisation.
+   *
+   * Called by ChatService when the LLM API returns a context-length error.
+   */
+  async reportTokenOverflow(userKey: string): Promise<void> {
+    if (!this.enabled) return;
+
+    const manager = await this.getOrCreateManager(userKey);
+    if (!manager) {
+      this.logger.warn(`[offload] reportTokenOverflow: no manager for ${userKey}`);
+      return;
+    }
+
+    manager._forceEmergencyNext = true;
+    this.logger.warn(
+      `[offload] reportTokenOverflow: set _forceEmergencyNext for ${userKey}` +
+      ` (activeMmd=${manager.getActiveMmdFile() ?? "none"})`,
+    );
+
+    // Persist state so the flag survives process restarts — but note that
+    // _forceEmergencyNext is a runtime-only field on OffloadStateManager
+    // and is NOT persisted via save(). This is by design: the submodule
+    // treats it as ephemeral state that's checked once on the next L3 entry.
   }
 
   /**
@@ -971,4 +1112,60 @@ function stringify(value: unknown): string {
 function truncate(s: string, maxLen: number): string {
   if (s.length <= maxLen) return s;
   return s.slice(0, maxLen) + "...";
+}
+
+/**
+ * Convert messages from AI SDK CoreMessage format (content arrays with
+ * tool-call blocks) to OpenAI format (content string + tool_calls array).
+ *
+ * This is necessary because the L3 compressor (compressor.ts) expects the
+ * OpenAI format for its normalizeMessages() step.
+ *
+ * Modifies messages in-place. Idempotent — messages already in OpenAI
+ * format are unchanged.
+ *
+ * Example conversion:
+ *   Input:  { role: "assistant", content: [{ type: "tool-call", toolCallId: "...", toolName: "x", args: {} }] }
+ *   Output: { role: "assistant", content: "", tool_calls: [{ id: "...", type: "function", function: { name: "x", arguments: "{}" } }] }
+ */
+function ensureOpenAIFormat(messages: unknown[]): void {
+  for (const msg of messages) {
+    const m = msg as Record<string, unknown>;
+    if (m.role !== "assistant") continue;
+    if (typeof m.content === "string") continue; // Already OpenAI format
+
+    const contentArr = m.content;
+    if (!Array.isArray(contentArr) || contentArr.length === 0) continue;
+
+    // Convert content array to OpenAI format
+    const textParts: string[] = [];
+    const toolCalls: Array<{
+      id: string;
+      type: "function";
+      function: { name: string; arguments: string };
+    }> = [];
+
+    for (const block of contentArr as Array<Record<string, unknown>>) {
+      if (block.type === "text" && typeof block.text === "string") {
+        textParts.push(block.text);
+      } else if (block.type === "tool-call") {
+        toolCalls.push({
+          id: String(block.toolCallId ?? ""),
+          type: "function",
+          function: {
+            name: String(block.toolName ?? ""),
+            arguments:
+              typeof block.args === "string"
+                ? block.args
+                : JSON.stringify(block.args ?? {}),
+          },
+        });
+      }
+    }
+
+    m.content = textParts.join("");
+    if (toolCalls.length > 0) {
+      m.tool_calls = toolCalls;
+    }
+  }
 }

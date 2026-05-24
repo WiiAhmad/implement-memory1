@@ -23,8 +23,15 @@ import {
   compressByScoreCascade,
   aggressiveCompressUntilBelowThreshold,
   emergencyCompress,
+  buildHistoryMmdInjection,
+  removeExistingMmdInjections,
+  filterHeartbeatMessages,
+  isTokenOverflowError,
 } from "../../TencentDB-Agent-Memory/src/offload/hooks/llm-input-l3.ts";
 
+import { findHistoryMmdInsertionPoint } from "../../TencentDB-Agent-Memory/src/offload/mmd-injector.ts";
+
+import type { PluginConfig } from "../../TencentDB-Agent-Memory/src/offload/types.ts";
 import type { OffloadStateManager } from "../../TencentDB-Agent-Memory/src/offload/state-manager.ts";
 
 // ─── Token Tracker Initialization ───────────────────────────────────────
@@ -297,6 +304,7 @@ export async function compressSession(
 
   // 4. Emergency: last resort — early return since it compresses below any other threshold
   if (workingTokens >= emergencyThreshold && messages.length > 4) {
+    const tierStartedAt = Date.now();
     emergencyApplied = true;
     const emergencyTarget = Math.floor(
       contextWindow * (config.emergencyTargetRatio ?? PLUGIN_DEFAULTS.emergencyTargetRatio),
@@ -312,8 +320,36 @@ export async function compressSession(
     emergencyDeletedCount = result.deletedCount;
     workingTokens = result.remainingTokens;
     effectiveLogger.info(
-      `[offload] EMERGENCY: deleted ${result.deletedCount} msgs, remaining≈${workingTokens} (target=${emergencyTarget})`,
+      `[offload] EMERGENCY: deleted ${result.deletedCount} msgs, remaining≈${workingTokens} ` +
+      `(target=${emergencyTarget}) [${Date.now() - tierStartedAt}ms]`,
     );
+
+    // ── History MMD injection after emergency deletion ──
+    if (stateManager && result.deletedToolCallIds.length > 0) {
+      try {
+        const mmdResult = await buildHistoryMmdInjection(
+          result.deletedToolCallIds,
+          offloadMap,
+          offloadEntries,
+          stateManager,
+          effectiveLogger,
+          countTokens,
+          contextWindow,
+          toPluginConfig(config),
+        );
+        if (mmdResult.injectedMessages.length > 0) {
+          removeExistingMmdInjections(messages as any[]);
+          const histInsertIdx = findHistoryMmdInsertionPoint(messages as any[]);
+          (messages as any[]).splice(histInsertIdx, 0, ...mmdResult.injectedMessages);
+          effectiveLogger.info(
+            `[offload] EMERGENCY: injected ${mmdResult.injectedMessages.length} history MMD msg(s) at [${histInsertIdx}], ` +
+            `tokens=${mmdResult.totalMmdTokens}, files=[${mmdResult.mmdFiles.join(",")}]`,
+          );
+        }
+      } catch (mmdErr) {
+        effectiveLogger.warn(`[offload] EMERGENCY: history MMD injection failed: ${mmdErr}`);
+      }
+    }
 
     // Restore messages and return — emergency targets 60%, well below other thresholds
     denormalizeMessages(messages, restore);
@@ -326,6 +362,7 @@ export async function compressSession(
 
   // 5. Aggressive: delete oldest messages
   if (workingTokens >= aggressiveThreshold && messages.length > 2) {
+    const tierStartedAt = Date.now();
     aggressiveApplied = true;
     const aggressiveDeleteRatio =
       config.aggressiveDeleteRatio ?? PLUGIN_DEFAULTS.aggressiveDeleteRatio;
@@ -344,7 +381,8 @@ export async function compressSession(
     );
     aggressiveDeletedCount = result.deletedCount;
     effectiveLogger.info(
-      `[offload] AGGRESSIVE: deleted ${result.deletedCount} msgs over ${result.rounds} rounds, remaining≈${result.remainingTokens}`,
+      `[offload] AGGRESSIVE: deleted ${result.deletedCount} msgs over ${result.rounds} rounds, ` +
+      `remaining≈${result.remainingTokens} [${Date.now() - tierStartedAt}ms]`,
     );
 
     // Update working tokens using a fresh snapshot after aggressive deletion
@@ -355,10 +393,46 @@ export async function compressSession(
       null,
     );
     workingTokens = afterAggressive.totalTokens;
+
+    // ── History MMD injection after aggressive deletion ──
+    if (stateManager && result.allDeletedToolCallIds.length > 0) {
+      try {
+        const mmdResult = await buildHistoryMmdInjection(
+          result.allDeletedToolCallIds,
+          offloadMap,
+          offloadEntries,
+          stateManager,
+          effectiveLogger,
+          countTokens,
+          contextWindow,
+          toPluginConfig(config),
+        );
+        if (mmdResult.injectedMessages.length > 0) {
+          removeExistingMmdInjections(messages as any[]);
+          const histInsertIdx = findHistoryMmdInsertionPoint(messages as any[]);
+          (messages as any[]).splice(histInsertIdx, 0, ...mmdResult.injectedMessages);
+          effectiveLogger.info(
+            `[offload] AGGRESSIVE: injected ${mmdResult.injectedMessages.length} history MMD msg(s) at [${histInsertIdx}], ` +
+            `tokens=${mmdResult.totalMmdTokens}, files=[${mmdResult.mmdFiles.join(",")}]`,
+          );
+          // Re-estimate working tokens after MMD injection (MMD adds tokens)
+          const afterMmd = buildTiktokenContextSnapshot(
+            "l3_after_aggressive_mmd",
+            messages,
+            null,
+            null,
+          );
+          workingTokens = afterMmd.totalTokens;
+        }
+      } catch (mmdErr) {
+        effectiveLogger.warn(`[offload] AGGRESSIVE: history MMD injection failed: ${mmdErr}`);
+      }
+    }
   }
 
   // 6. Mild: replace tool results with L1 summaries
   if (workingTokens >= mildThreshold && offloadMap.size > 0) {
+    const tierStartedAt = Date.now();
     mildApplied = true;
     const mildScanRatio =
       config.mildOffloadScanRatio ?? PLUGIN_DEFAULTS.mildOffloadScanRatio;
@@ -372,7 +446,8 @@ export async function compressSession(
     );
     mildReplacedCount = cascadeResult.replacedCount;
     effectiveLogger.info(
-      `[offload] MILD: replaced ${cascadeResult.replacedCount} tool results, threshold=${cascadeResult.finalThreshold}`,
+      `[offload] MILD: replaced ${cascadeResult.replacedCount} tool results, ` +
+      `threshold=${cascadeResult.finalThreshold} [${Date.now() - tierStartedAt}ms]`,
     );
   }
 
@@ -423,6 +498,43 @@ function finalizeResult(
     utilisation: contextWindow > 0 ? tokensAfter / contextWindow : 0,
   };
 }
+
+// ─── Config conversion (OffloadConfig → Partial<PluginConfig>) ──────────
+
+/**
+ * Convert the bot's OffloadConfig to the submodule's PluginConfig shape.
+ * Used when calling submodule functions that expect PluginConfig.
+ */
+function toPluginConfig(config: OffloadConfig): Partial<PluginConfig> {
+  return {
+    model: config.model,
+    temperature: config.temperature,
+    l2NullThreshold: config.l2NullThreshold,
+    l2TimeoutSeconds: config.l2TimeoutSeconds,
+    mildOffloadRatio: config.mildOffloadRatio,
+    aggressiveCompressRatio: config.aggressiveCompressRatio,
+    emergencyCompressRatio: config.emergencyCompressRatio,
+    emergencyTargetRatio: config.emergencyTargetRatio,
+    aggressiveDeleteRatio: config.aggressiveDeleteRatio,
+    mildOffloadScanRatio: config.mildOffloadScanRatio,
+    mmdMaxTokenRatio: config.mmdMaxTokenRatio,
+    defaultContextWindow: config.contextWindow,
+  };
+}
+
+// ─── Re-exported utilities ───────────────────────────────────────────────
+
+/**
+ * Detect whether an error is a token overflow / context-length error.
+ * Re-exported from the submodule for use by OffloadService.
+ */
+export { isTokenOverflowError };
+
+/**
+ * Filter heartbeat tool call messages from the conversation array.
+ * Re-exported from the submodule for use by OffloadService.
+ */
+export { filterHeartbeatMessages };
 
 // ─── Legacy message normalization (simpler, no restore needed) ──────────
 
