@@ -8,6 +8,7 @@
     "dev": "bun --watch index.ts",
     "build": "bun build index.ts --outdir dist --target bun",
     "test": "bun test ./src/**/*.test.ts",
+    "test:prod": "bun test ./test/prod/**/*.test.ts",
     "postinstall": "bun install --cwd ./TencentDB-Agent-Memory"
   },
   "devDependencies": {
