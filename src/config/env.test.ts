@@ -146,6 +146,9 @@ describe("resolveDataPaths", () => {
       expect(paths.authDir).toBe(path.join(path.resolve(root), "auth"));
       expect(paths.logsDir).toBe(path.join(path.resolve(root), "logs"));
       expect(paths.memoryDir).toBe(path.join(path.resolve(root), "memory-tdai"));
+      expect(paths.walletsDir).toBe(path.join(path.resolve(root), "wallets"));
+      expect(paths.walletsDbFile).toBe(path.join(paths.walletsDir, "wallets.sqlite"));
+      expect(paths.walletsBackupDbFile).toBe(path.join(paths.walletsDir, "wallets-backup.sqlite"));
       expect(paths.pendingCodesFile).toBe(path.join(paths.authDir, "pending-codes.json"));
       expect(paths.verifiedUsersFile).toBe(path.join(paths.authDir, "verified-users.json"));
       expect(paths.verificationLogFile).toBe(

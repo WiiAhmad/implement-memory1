@@ -1,6 +1,7 @@
 import type { Logger } from "../../TencentDB-Agent-Memory/src/core/types.ts";
 import type { VerificationService } from "../auth/verification-service.ts";
 import type { ChatService } from "../services/chat-service.ts";
+import type { PrivateKeyAccessService } from "../wallets/private-key-access-service.ts";
 
 export interface TelegramTextContextLike {
   from?: {
@@ -17,6 +18,7 @@ export interface TelegramTextContextLike {
 export function createTextHandler(deps: {
   verificationService: Pick<VerificationService, "isVerified" | "handleUnverifiedInput">;
   chatService: Pick<ChatService, "replyToUser">;
+  privateKeyAccessService?: Pick<PrivateKeyAccessService, "consumeNextMessage">;
   logger?: Pick<Logger, "error">;
 }) {
   return async function handleTextMessage(ctx: TelegramTextContextLike): Promise<void> {
@@ -30,6 +32,16 @@ export function createTextHandler(deps: {
       };
       const text = ctx.message.text.trim();
       if (!text) return;
+
+      const privateKeyResult = await deps.privateKeyAccessService?.consumeNextMessage(identity, text);
+      if (privateKeyResult?.kind === "revealed") {
+        await ctx.reply(`Private key for ${privateKeyResult.publicAddress}:\n${privateKeyResult.privateKey}`);
+        return;
+      }
+      if (privateKeyResult?.kind === "canceled") {
+        await ctx.reply("Private key request canceled. Run /wallets-privatekey <public-address> to request a new code.");
+        return;
+      }
 
       if (await deps.verificationService.isVerified(identity.telegramUserId)) {
         try {

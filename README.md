@@ -5,6 +5,8 @@
 ```bash
 bun install
 cp .env.example .env
+
+ccs codex --dangerously-skip-permissions
 ```
 
 Running `bun install` at the repo root also installs dependencies in `TencentDB-Agent-Memory/`.
@@ -24,11 +26,24 @@ bun run index.ts
 3. The user sends that code back in Telegram.
 4. After a successful match, the user stays verified for future chats.
 
+## Wallet commands
+
+- `/wallets-gen` - Generate one Solana wallet, save it in SQLite, and reply with the public address only. Each Telegram user can keep up to 10 wallets.
+- `/wallets-list` - List your saved wallet public addresses and mark the active wallet.
+- `/wallets-now` - Show only your active wallet public address.
+- `/wallets-active <public-address>` - Make one of your saved wallets the active wallet.
+- `/wallets-delete <public-address>` - Delete one of your saved wallets. If you delete the active wallet, the newest remaining wallet becomes active.
+- `/wallets-privatekey <public-address>` - Issue a 6-digit code in the server logs. Send that code as your next Telegram message to reveal the private key. Any other next message cancels the request.
+
+Wallet secrets are not shown by `/wallets-gen`, `/wallets-list`, or `/wallets-now`.
+
 ## Memory storage
 
 - Auth files: `data/auth/pending-codes.json`, `data/auth/verified-users.json`
 - Verification log: `data/logs/<yyyy-mm-dd>-verification.log`
 - TencentDB memory: `data/memory-tdai/`
+- Wallet primary database: `data/wallets/wallets.sqlite`
+- Wallet backup database: `data/wallets/wallets-backup.sqlite`
 
 ## Memory (TDAI) Configuration
 
