@@ -8,7 +8,36 @@
 
 import type { AppEnv } from "../config/env.ts";
 
-// ─── Step 19a: Build a memory session key from a Telegram user ID ──────
+// ─── Step 19a: Autonomy config type ────────────────────────────────────
+//  Mirrors the AppEnv.autonomy group for dependency injection.
+export interface AutonomyConfig {
+  schedulerPhase: "none" | "observer" | "active";
+  checkpointNamespace: string;
+  checkpointFileLockEnabled: boolean;
+  featureGates: {
+    l2ForceAfterIdle: boolean;
+    l2StartupRecovery: boolean;
+    l2StaleRefresh: boolean;
+    personaStaleRefresh: boolean;
+    personaForceIfMissing: boolean;
+    sceneArchive: boolean;
+    sceneMerge: boolean;
+    offloadReclaim: boolean;
+    offloadL2WaitRetry: boolean;
+  };
+}
+
+/** Extract AutonomyConfig from AppEnv. */
+export function buildAutonomyConfig(env: AppEnv): AutonomyConfig {
+  return {
+    schedulerPhase: env.autonomy.schedulerPhase,
+    checkpointNamespace: env.autonomy.checkpointNamespace,
+    checkpointFileLockEnabled: env.autonomy.checkpointFileLockEnabled,
+    featureGates: { ...env.autonomy.featureGates },
+  };
+}
+
+// ─── Step 19b: Build a memory session key from a Telegram user ID ──────
 //  Format: "tg:user:{id}" — used to scope all memory operations per user.
 export function buildMemorySessionKey(telegramUserId: number | string): string {
   return `tg:user:${telegramUserId}`;

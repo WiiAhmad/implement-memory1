@@ -131,6 +131,356 @@ index e09cff5..c8dd1e5 100644
        model: optStr(personaGroup, "model"),
      },
      pipeline: {
+diff --git a/src/core/scene/scene-extractor.ts b/src/core/scene/scene-extractor.ts
+index 6730ffb..39c9408 100644
+--- a/src/core/scene/scene-extractor.ts
++++ b/src/core/scene/scene-extractor.ts
+@@ -23,7 +23,7 @@ import { CheckpointManager } from "../../utils/checkpoint.js";
+ import { BackupManager } from "../../utils/backup.js";
+ import { readSceneIndex, syncSceneIndex } from "../scene/scene-index.js";
+ import type { SceneIndexEntry } from "../scene/scene-index.js";
+-import { parseSceneBlock } from "../scene/scene-format.js";
++import { parseSceneBlock, formatSceneBlock, computeImportanceScore } from "../scene/scene-format.js";
+ import { generateSceneNavigation, stripSceneNavigation } from "../scene/scene-navigation.js";
+ import { buildSceneExtractionPrompt } from "../prompts/scene-extraction.js";
+ import { report } from "../report/reporter.js";
+@@ -269,6 +269,16 @@ export class SceneExtractor {
+     await syncSceneIndex(this.dataDir);
+     this.logger?.debug?.(`${TAG} extract() scene index synced: ${Date.now() - syncStartMs}ms`);
+ 
++    // Phase 6a: Update scene metadata (status, topicHash, memoryCount)
++    try {
++      const metaStartMs = Date.now();
++      await this.updateSceneMetadata();
++      this.logger?.debug?.(`${TAG} extract() scene metadata updated: ${Date.now() - metaStartMs}ms`);
++    } catch (metaErr) {
++      // Non-fatal — log and continue
++      this.logger?.warn(`${TAG} extract() scene metadata update failed: ${metaErr instanceof Error ? metaErr.message : String(metaErr)}`);
++    }
++
+     // Phase 7: Update persona.md navigation (GAP-4 fix)
+     const navStartMs = Date.now();
+     try {
+@@ -384,13 +394,120 @@ export class SceneExtractor {
+     for (const entry of index) {
+       filenames.push(entry.filename);
+       lines.push(`### ${entry.filename}`);
+-      lines.push(`**Heat**: ${entry.heat} | **Updated**: ${entry.updated}`);
++      lines.push(`**Heat**: ${entry.heat} | **Updated**: ${entry.updated} | **Status**: ${entry.status ?? "active"}`);
+       lines.push(`**summary**: ${entry.summary}`);
+       lines.push("");
+     }
++
++    // Add merge recommendations for similar scenes (Phase 3c)
++    const mergeRecommendations = this.findMergeCandidates(index);
++    if (mergeRecommendations) {
++      lines.push("### Merge Recommendations");
++      lines.push(mergeRecommendations);
++      lines.push("");
++    }
++
+     return { summaries: lines.join("\n"), filenames };
+   }
+ 
++  /**
++   * Find similar scene pairs and generate merge recommendations.
++   * Uses topic hash exact match and keyword overlap (Jaccard similarity).
++   * Returns a formatted string for inclusion in the prompt, or null if none found.
++   */
++  private findMergeCandidates(index: SceneIndexEntry[]): string | null {
++    const candidates: Array<{ a: string; b: string; similarity: number }> = [];
++
++    for (let i = 0; i < index.length; i++) {
++      for (let j = i + 1; j < index.length; j++) {
++        const a = index[i]!;
++        const b = index[j]!;
++        const similarity = this.computeSceneSimilarity(a, b);
++        // Recommend merge if similarity exceeds a generous threshold (0.6)
++        // to inform the LLM before it creates new scenes
++        if (similarity >= 0.6) {
++          candidates.push({ a: a.filename, b: b.filename, similarity });
++        }
++      }
++    }
++
++    if (candidates.length === 0) return null;
++
++    const lines = candidates.map(
++      (c) => `- **${c.a}** ↔ **${c.b}** (similarity: ${c.similarity.toFixed(2)}) — consider merging these scenes`,
++    );
++    return lines.join("\n");
++  }
++
++  /**
++   * Compute similarity between two scenes (0.0–1.0).
++   * Uses topic hash exact match + keyword overlap.
++   */
++  private computeSceneSimilarity(a: SceneIndexEntry, b: SceneIndexEntry): number {
++    // Topic hash exact match = high similarity
++    if (a.topicHash && b.topicHash && a.topicHash === b.topicHash) {
++      return 1.0;
++    }
++
++    // Jaccard similarity on summary keywords
++    const tokensA = this.tokenizeForMerge(a.summary);
++    const tokensB = this.tokenizeForMerge(b.summary);
++
++    if (tokensA.length === 0 || tokensB.length === 0) return 0;
++
++    const setA = new Set(tokensA);
++    const setB = new Set(tokensB);
++    const intersection = [...setA].filter((t) => setB.has(t));
++    const union = new Set([...setA, ...setB]);
++
++    return intersection.length / union.size;
++  }
++
++  private tokenizeForMerge(text: string): string[] {
++    return text
++      .toLowerCase()
++      .replace(/[^a-z0-9\s]/g, "")
++      .split(/\s+/)
++      .filter((t) => t.length > 3);
++  }
++
++  /**
++   * Update scene metadata (status, topicHash, memoryCount) for all scene files.
++   * Reads each scene block, updates META fields, and writes back.
++   * Non-fatal: errors on individual files are skipped.
++   */
++  private async updateSceneMetadata(): Promise<void> {
++    const sceneBlocksDir = path.join(this.dataDir, "scene_blocks");
++    const index = await readSceneIndex(this.dataDir);
++
++    for (const entry of index) {
++      try {
++        const filePath = path.join(sceneBlocksDir, entry.filename);
++        const raw = await fs.readFile(filePath, "utf-8");
++        const block = parseSceneBlock(raw, entry.filename);
++
++        // Compute topic hash from summary keywords
++        const topicHash = computeTopicHash(entry.summary);
++
++        // Count how many memories reference this scene topic
++        // (approximate: check if content contains scene title as a section header)
++        const memoryCount = estimateMemoryCount(block.content);
++
++        // Update META fields
++        block.meta.status = block.meta.status || "active";
++        block.meta.topicHash = topicHash;
++        block.meta.memoryCount = memoryCount;
++        block.meta.updated = new Date().toISOString();
++
++        const formatted = formatSceneBlock(block.meta, block.content);
++        await fs.writeFile(filePath, formatted, "utf-8");
++      } catch {
++        // Non-fatal — skip individual file errors
++        continue;
++      }
++    }
++  }
++
+   /**
+    * Update the scene navigation section at the end of persona.md.
+    *
+@@ -438,3 +555,28 @@ export class SceneExtractor {
+ function formatTimestamp(d: Date): string {
+   return d.toISOString();
+ }
++
++/**
++ * Compute a topic hash from scene summary text using keyword extraction.
++ * Extracts top-3 significant words (longer than 3 chars) and uses them as the hash.
++ */
++function computeTopicHash(summary: string): string {
++  if (!summary) return "";
++  const words = summary
++    .toLowerCase()
++    .replace(/[^a-z0-9\s]/g, "")
++    .split(/\s+/)
++    .filter((w) => w.length > 3)
++    .slice(0, 3);
++  return words.sort().join("::");
++}
++
++/**
++ * Estimate how many memory entries a scene block contains.
++ * Counts numbered list items, bullet points, or "- " prefixed lines.
++ */
++function estimateMemoryCount(content: string): number {
++  if (!content) return 1;
++  const listItems = content.match(/^[\s]*[-*]\s/gm);
++  return Math.max(1, listItems?.length ?? 1);
++}
+diff --git a/src/core/scene/scene-format.ts b/src/core/scene/scene-format.ts
+index cb12628..0dde85a 100644
+--- a/src/core/scene/scene-format.ts
++++ b/src/core/scene/scene-format.ts
+@@ -2,11 +2,51 @@
+  * Scene Block file format: parse and format the META-delimited Markdown files.
+  */
+ 
++export type SceneStatus = "active" | "stale" | "resolved" | "archived";
++
++export interface SceneMetadata {
++  sceneId: string;
++  title: string;
++  status: SceneStatus;
++  createdAt: string;        // ISO-8601
++  updatedAt: string;        // ISO-8601
++  lastReferencedAt: string; // ISO-8601
++  memoryCount: number;
++  importanceScore: number;
++  topicHash?: string;
++}
++
+ export interface SceneBlockMeta {
+   created: string;
+   updated: string;
+   summary: string;
+   heat: number;
++  status?: SceneStatus;
++  topicHash?: string;
++  memoryCount?: number;
++}
++
++/** Create default SceneMetadata for a new scene. */
++export function createDefaultMetadata(title: string): SceneMetadata {
++  const now = new Date().toISOString();
++  return {
++    sceneId: `scene_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
++    title,
++    status: "active",
++    createdAt: now,
++    updatedAt: now,
++    lastReferencedAt: now,
++    memoryCount: 1,
++    importanceScore: 1.0,
++  };
++}
++
++/** Compute importance score based on heat, memory count, and recency. */
++export function computeImportanceScore(heat: number, memoryCount: number, daysSinceUpdate: number): number {
++  const heatFactor = Math.min(heat / 10, 1.0);
++  const memoryFactor = Math.min(memoryCount / 20, 1.0);
++  const recencyFactor = Math.max(0, 1 - daysSinceUpdate / 30);
++  return Number(((heatFactor * 0.4 + memoryFactor * 0.3 + recencyFactor * 0.3) * 10).toFixed(1));
+ }
+ 
+ export interface SceneBlock {
+@@ -37,6 +77,10 @@ export function parseSceneBlock(raw: string, filename: string): SceneBlock {
+   const metaBlock = raw.slice(startIdx + META_START.length, endIdx).trim();
+   const content = raw.slice(endIdx + META_END.length).trim();
+ 
++  const statusRaw = extractMetaField(metaBlock, "status");
++  const topicHashRaw = extractMetaField(metaBlock, "topicHash");
++  const memoryCountRaw = extractMetaField(metaBlock, "memoryCount");
++
+   const meta: SceneBlockMeta = {
+     created: extractMetaField(metaBlock, "created"),
+     updated: extractMetaField(metaBlock, "updated"),
+@@ -44,6 +88,10 @@ export function parseSceneBlock(raw: string, filename: string): SceneBlock {
+     heat: parseInt(extractMetaField(metaBlock, "heat"), 10) || 0,
+   };
+ 
++  if (statusRaw) meta.status = statusRaw as SceneStatus;
++  if (topicHashRaw) meta.topicHash = topicHashRaw;
++  if (memoryCountRaw) meta.memoryCount = parseInt(memoryCountRaw, 10) || undefined;
++
+   return { filename, meta, content };
+ }
+ 
+@@ -58,14 +106,19 @@ export function formatSceneBlock(meta: SceneBlockMeta, content: string): string
+  * Format the META section.
+  */
+ export function formatMeta(meta: SceneBlockMeta): string {
+-  return [
++  const lines = [
+     META_START,
+     `created: ${meta.created}`,
+     `updated: ${meta.updated}`,
+     `summary: ${meta.summary}`,
+     `heat: ${meta.heat}`,
+-    META_END,
+-  ].join("\n");
++  ];
++  // Include optional fields only when present (preserves backward compatibility)
++  if (meta.status) lines.push(`status: ${meta.status}`);
++  if (meta.topicHash) lines.push(`topicHash: ${meta.topicHash}`);
++  if (meta.memoryCount !== undefined) lines.push(`memoryCount: ${meta.memoryCount}`);
++  lines.push(META_END);
++  return lines.join("\n");
+ }
+ 
+ function extractMetaField(metaBlock: string, field: string): string {
+diff --git a/src/core/scene/scene-index.ts b/src/core/scene/scene-index.ts
+index 84f7d47..4c1d1c4 100644
+--- a/src/core/scene/scene-index.ts
++++ b/src/core/scene/scene-index.ts
+@@ -6,12 +6,18 @@ import fs from "node:fs/promises";
+ import path from "node:path";
+ import { parseSceneBlock } from "./scene-format.js";
+ 
++import type { SceneStatus } from "./scene-format.js";
++
+ export interface SceneIndexEntry {
+   filename: string;
+   summary: string;
+   heat: number;
+   created: string;
+   updated: string;
++  status?: SceneStatus;
++  importanceScore?: number;
++  topicHash?: string;
++  memoryCount?: number;
+ }
+ 
+ /**
+@@ -40,6 +46,10 @@ export async function readSceneIndex(dataDir: string): Promise<SceneIndexEntry[]
+         heat: typeof item.heat === "number" ? item.heat : 0,
+         created: typeof item.created === "string" ? item.created : "",
+         updated: typeof item.updated === "string" ? item.updated : "",
++        status: typeof item.status === "string" ? (item.status as SceneStatus) : undefined,
++        importanceScore: typeof item.importanceScore === "number" ? item.importanceScore : undefined,
++        topicHash: typeof item.topicHash === "string" ? item.topicHash : undefined,
++        memoryCount: typeof item.memoryCount === "number" ? item.memoryCount : undefined,
+       });
+     }
+     return entries;
+@@ -83,6 +93,10 @@ export async function syncSceneIndex(dataDir: string): Promise<SceneIndexEntry[]
+         heat: block.meta.heat,
+         created: block.meta.created,
+         updated: block.meta.updated,
++        status: block.meta.status ?? "active",
++        topicHash: block.meta.topicHash,
++        memoryCount: block.meta.memoryCount ?? 1,
++        importanceScore: computeImportanceScore(block.meta.heat, block.meta.memoryCount ?? 1, daysSinceUpdate(block.meta.updated)),
+       });
+     } catch {
+       // File may have been deleted between readdir and readFile (e.g. by concurrent
+@@ -94,3 +108,22 @@ export async function syncSceneIndex(dataDir: string): Promise<SceneIndexEntry[]
+   await writeSceneIndex(dataDir, entries);
+   return entries;
+ }
++
++/**
++ * Compute approximate days since the given ISO timestamp.
++ */
++function daysSinceUpdate(updated: string): number {
++  if (!updated) return 0;
++  const ms = Date.now() - new Date(updated).getTime();
++  return Math.max(0, ms / 86_400_000);
++}
++
++/**
++ * Compute importance score based on heat, memory count, and recency.
++ */
++function computeImportanceScore(heat: number, memoryCount: number, daysSinceUpdate: number): number {
++  const heatFactor = Math.min(heat / 10, 1.0);
++  const memoryFactor = Math.min(memoryCount / 20, 1.0);
++  const recencyFactor = Math.max(0, 1 - daysSinceUpdate / 30);
++  return Number(((heatFactor * 0.4 + memoryFactor * 0.3 + recencyFactor * 0.3) * 10).toFixed(1));
++}
 diff --git a/src/core/store/sqlite.ts b/src/core/store/sqlite.ts
 index b71a05b..3ab2349 100644
 --- a/src/core/store/sqlite.ts

@@ -104,6 +104,18 @@ export interface OffloadConfig {
 
   /** Seconds since last L2 before a new check runs (default: 300). */
   l2TimeoutSeconds: number;
+
+  /** Seconds before a "wait" entry is retried for L2 processing (default: 120). */
+  l2WaitRetrySeconds: number;
+
+  /** If true, L2 timeout trigger requires at least one new offload entry. */
+  l2TimeTriggerRequiresNewOffload: boolean;
+
+  /** Feature gate: offload data retention reclaim (default: false). */
+  reclaimEnabled: boolean;
+
+  /** Feature gate: wait-entry retry for L2 (default: false). */
+  waitRetryEnabled: boolean;
 }
 
 // ─── Step 20c: Default values for all OffloadConfig fields ────────────
@@ -137,4 +149,8 @@ export const DEFAULT_OFFLOAD_CONFIG: OffloadConfig = {
   // L2 scheduling
   l2NullThreshold: 4,
   l2TimeoutSeconds: 300,
+  l2WaitRetrySeconds: 120,
+  l2TimeTriggerRequiresNewOffload: true,
+  reclaimEnabled: false,
+  waitRetryEnabled: false,
 };

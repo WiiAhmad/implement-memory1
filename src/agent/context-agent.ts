@@ -20,6 +20,7 @@ import type { ChatClient, ChatMessage } from "../openai/chat-client.ts";
 import { isTokenOverflowError } from "../offload/compressor.ts";
 import type { OffloadService } from "../offload/index.ts";
 import { PromptBuilder } from "../prompt/prompt-builder.ts";
+import type { CoordinationService } from "../services/coordination.ts";
 import type { ToolHandler } from "../tools/tool-handler.ts";
 
 export interface ContextAgentOptions {
@@ -29,6 +30,7 @@ export interface ContextAgentOptions {
   promptBuilder?: PromptBuilder;
   toolHandler?: ToolHandler;
   offloadService?: OffloadService;
+  coordination?: CoordinationService;
 }
 
 export interface ContextAgentReplyParams {
@@ -47,11 +49,13 @@ export class ContextAgent {
   private readonly promptBuilder: PromptBuilder;
   private readonly toolHandler?: ToolHandler;
   private readonly offloadService?: OffloadService;
+  private readonly coordination?: CoordinationService;
 
   constructor(private readonly opts: ContextAgentOptions) {
     this.promptBuilder = opts.promptBuilder ?? new PromptBuilder();
     this.toolHandler = opts.toolHandler;
     this.offloadService = opts.offloadService;
+    this.coordination = opts.coordination;
   }
 
   // ─── Step 37a: Main reply method (full turn pipeline) ────────────────
@@ -74,11 +78,26 @@ export class ContextAgent {
     const recall = await this.recall(userKey, text);
     this.toolHandler?.resetCallCount(userKey);
 
-    // ─── Step 37a-iii: Offload beforeTurn (L3 compression) ──────────
-    //  Compresses conversation history if above context window thresholds.
-    const previousMessages = await this.prepareOffloadMessages(userKey, text, history);
+    // ─── Step 37a-iii: Inject coordination context (Phase 5) ──────
+    //  Inject persona/scene context into messages BEFORE offload compression
+    //  so L3 preserves it rather than discarding it.
+    const injectedMessages = this.coordination
+      ? await this.injectCoordinationContext(recall, history)
+      : history;
 
-    // ─── Step 37a-iv: Build prompt ──────────────────────────────────
+    // ─── Step 37a-iv: Offload beforeTurn (L3 compression) ──────────
+    //  Compresses conversation history if above context window thresholds.
+    const offloadMessages = await this.prepareOffloadMessages(userKey, text, injectedMessages);
+
+    // ─── Step 37a-iv-b: Strip injected coordination context ─────────
+    //  The coordination context was injected before L3 so the compressor
+    //  preserves it, but it would duplicate with the prompt builder's
+    //  formatting. Remove it now.
+    const previousMessages = this.coordination
+      ? this.stripCoordinationContext(offloadMessages)
+      : offloadMessages;
+
+    // ─── Step 37a-v: Build prompt ──────────────────────────────────
     const promptStartAt = Date.now();
     const prompt = this.promptBuilder.build({
       prependContext: recall.prependContext,
@@ -88,7 +107,7 @@ export class ContextAgent {
     });
     this.opts.logger.debug?.(`[timing] prompt.build: ${Date.now() - promptStartAt}ms`);
 
-    // ─── Step 37a-v: LLM call with tool loop ────────────────────────
+    // ─── Step 37a-vi: LLM call with tool loop ────────────────────────
     const offloadToolTasks: Promise<void>[] = [];
     const llmStartedAt = Date.now();
     let reply: string;
@@ -124,11 +143,11 @@ export class ContextAgent {
       throw error;
     }
 
-    // ─── Step 37a-vi: Offload afterTurn ─────────────────────────────
+    // ─── Step 37a-vii: Offload afterTurn ────────────────────────────
     //  Flushes L1 tool pairs, runs L1.5 task boundary judgment, schedules L2.
     await this.runOffloadAfterTurn(userKey, text, offloadToolTasks, false);
 
-    // ─── Step 37a-vii: Capture turn to memory ──────────────────────
+    // ─── Step 37a-viii: Capture turn to memory ─────────────────────
     //  Saves the completed user+assistant turn to TDAI long-term memory.
     await this.capture(userKey, text, reply);
 
@@ -159,7 +178,47 @@ export class ContextAgent {
     }
   }
 
-  // ─── Step 37d: Run offload beforeTurn (L3 compression) ─────────────
+  // ─── Step 37d: Inject coordination context before compression (Phase 5) ─
+  //  Injects persona/scene context into the message array BEFORE offload L3
+  //  compression, so the compressor sees it as part of the message stream
+  //  and preserves it rather than discarding it.
+  //  After compression, the injected message is stripped so the prompt builder
+  //  doesn't duplicate it (the prompt builder adds it back via recall context).
+  private readonly injectSystemMsgLabel = "__coord_injected__";
+
+  private async injectCoordinationContext(
+    recall: { prependContext: string; appendSystemContext: string },
+    history: ChatMessage[],
+  ): Promise<ChatMessage[]> {
+    if (!this.coordination) return history;
+    const injectionContent = this.coordination.buildInjectionContext(recall);
+    if (!injectionContent) return history;
+
+    this.coordination.recordContextInjection();
+    this.opts.logger.debug(`[coordination] injecting ${injectionContent.length} chars of scene/persona context before compression`);
+
+    // Prepend the context as a system message so L3 sees it
+    return [
+      {
+        role: "system" as const,
+        content: `## ${this.injectSystemMsgLabel}
+${injectionContent}`,
+      },
+      ...history,
+    ];
+  }
+
+  /**
+   * Strip the injected coordination system message from compressed messages
+   * to avoid duplication — the prompt builder adds the context back via recall.
+   */
+  private stripCoordinationContext(messages: ChatMessage[]): ChatMessage[] {
+    return messages.filter(
+      (m) => !(m.role === "system" && typeof m.content === "string" && m.content.startsWith(`## ${this.injectSystemMsgLabel}`)),
+    );
+  }
+
+  // ─── Step 37e: Run offload beforeTurn (L3 compression) ─────────────
   private async prepareOffloadMessages(userKey: string, userText: string, history: ChatMessage[]): Promise<ChatMessage[]> {
     if (!this.offloadService) return history;
     const offloadStartedAt = Date.now();
@@ -168,7 +227,7 @@ export class ContextAgent {
     return messages as ChatMessage[];
   }
 
-  // ─── Step 37e: Handle LLM reply failure ─────────────────────────────
+  // ─── Step 37f: Handle LLM reply failure ─────────────────────────────
   private async handleFailedReply(error: unknown, params: {
     userKey: string; userText: string; llmStartedAt: number; offloadToolTasks: Promise<void>[];
   }): Promise<void> {
@@ -187,7 +246,7 @@ export class ContextAgent {
     }
   }
 
-  // ─── Step 37f: Run offload afterTurn ────────────────────────────────
+  // ─── Step 37g: Run offload afterTurn ────────────────────────────────
   private async runOffloadAfterTurn(userKey: string, userText: string, offloadToolTasks: Promise<void>[], afterFailedReply: boolean): Promise<void> {
     if (!this.offloadService) return;
     const afterTurnStartedAt = Date.now();
@@ -202,7 +261,7 @@ export class ContextAgent {
     this.opts.logger.info(`[timing] ${timingLabel}: ${Date.now() - afterTurnStartedAt}ms`);
   }
 
-  // ─── Step 37g: Capture turn to long-term memory ────────────────────
+  // ─── Step 37h: Capture turn to long-term memory ────────────────────
   private async capture(userKey: string, text: string, reply: string): Promise<void> {
     const captureStartedAt = Date.now();
     try { await this.opts.memory.capture(userKey, text, reply); }

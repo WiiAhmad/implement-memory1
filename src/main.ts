@@ -12,11 +12,15 @@ import { parseEnv } from "./config/env.ts";
 import { createLogger } from "./logging/console-logger.ts";
 import { createJsonlLogger } from "./logging/jsonl-logger.ts";
 import { combineLoggers } from "./logging/combine-loggers.ts";
+import { MemoryAutonomyCheckpoint } from "./memory/autonomy-checkpoint.ts";
+import { CoordinationService } from "./services/coordination.ts";
+import { Scheduler, type SchedulerConfig } from "./services/scheduler.ts";
 import { TencentMemoryAdapter } from "./memory/tencent-memory-adapter.ts";
 import { OffloadService } from "./offload/index.ts";
 import { OpenAiChatClient } from "./openai/chat-client.ts";
 import { ChatService } from "./services/chat-service.ts";
 import { ToolHandler } from "./tools/tool-handler.ts";
+import { registerAdminHandlers } from "./telegram/admin-handlers.ts";
 import { createBot } from "./telegram/bot.ts";
 import { ensureRuntimeDirectories, resolveDataPaths } from "./utils/paths.ts";
 import { PrivateKeyAccessService } from "./wallets/private-key-access-service.ts";
@@ -94,6 +98,10 @@ export async function start(): Promise<void> {
   //  The LLM can proactively search memories during a conversation turn.
   const toolHandler = new ToolHandler({ core: memory.getCore(), logger });
 
+  // ─── Step 2j-ii: Initialize Coordination Service (Phase 5) ────────────
+  //  Cross-system bridge between TDAI memory and offload.
+  const coordination = new CoordinationService(memory, logger);
+
   // ─── Step 2k: Initialize Offload Service (optional) ───────────────────
   //  Context compression engine: L3 (inline), L1 (summarization),
   //  L1.5 (task boundaries), L2 (MMD generation).
@@ -101,6 +109,8 @@ export async function start(): Promise<void> {
   const offloadConfig = {
     ...env.offload,
     model: env.offload.model || env.model,
+    reclaimEnabled: env.autonomy.featureGates.offloadReclaim,
+    waitRetryEnabled: env.autonomy.featureGates.offloadL2WaitRetry,
   };
   const offloadService = env.offload.enabled
     ? new OffloadService({
@@ -110,13 +120,63 @@ export async function start(): Promise<void> {
         getDataDir: () => paths.memoryDir,
         baseUrl: env.baseUrl,
         apiKey: env.openAIApiKey,
+        coordination,
       })
     : undefined;
 
-  // ─── Step 2l: Create Chat Service ──────────────────────────────────────
+  // ─── Step 2l-ii: Initialize MemoryAutonomyCheckpoint ──────────────────
+  //  Namespaced checkpoint for autonomous trigger state (Phase 1+).
+  const memoryCheckpoint = new MemoryAutonomyCheckpoint(
+    paths.memoryDir,
+    env.autonomy.checkpointNamespace,
+    env.autonomy.checkpointFileLockEnabled,
+  );
+
+  // ─── Step 2l-iii: Initialize Scheduler ─────────────────────────────────
+  //  Autonomous catch-up trigger engine for L2 and persona.
+  //  Phase is "observer" (log only) by default; "active" dispatches jobs.
+  const schedulerConfig: SchedulerConfig = {
+    l2ForceAfterIdleSeconds: env.autonomy.l2ForceAfterIdleSeconds,
+    l2StartupRecoveryDelaySeconds: env.autonomy.l2StartupRecoveryDelaySeconds,
+    l2StaleRefreshHours: env.autonomy.l2StaleRefreshHours,
+    l2MinInterval: env.memory.l2MinIntervalSeconds,
+    l2MaxInterval: env.memory.l2MaxIntervalSeconds,
+    personaMaxStaleHours: env.autonomy.personaMaxStaleHours,
+    personaMinScenes: env.autonomy.personaMinScenes,
+    personaMinChangedScenes: env.autonomy.personaMinChangedScenes,
+    personaTriggerN: env.memory.personaTriggerEveryN,
+    sessionWindowHours: env.memory.sessionActiveWindowHours,
+    globalConcurrencyLimit: 3,
+    coldSessionCleanupIntervalMs: 600_000,
+    coldSessionTimeoutMs: 3_600_000,
+    featureGates: env.autonomy.featureGates,
+  };
+  const scheduler = new Scheduler(
+    {
+      checkpoint: memoryCheckpoint,
+      pipeline: memory,
+      logger,
+      config: schedulerConfig,
+    },
+    env.autonomy.schedulerPhase,
+  );
+
+  // ─── Step 2l-iv: Create Chat Service (with scheduler + coordination) ──
   //  Manages per-user conversation histories with LRU eviction (max 500 users).
-  //  Delegates per-turn logic to ContextAgent (recall → prompt → LLM → capture).
-  const chatService = new ChatService({ memory, chatClient, logger, toolHandler, offloadService });
+  //  Scheduler gets notified on user activity to drive catch-up triggers.
+  const chatService = new ChatService({
+    memory,
+    chatClient,
+    logger,
+    toolHandler,
+    offloadService,
+    scheduler,
+    coordination,
+  });
+
+  // ─── Step 2l-v: Admin identity closures ──────────────────────────────
+  const isAdmin = (userId: number): boolean => env.admin.userIds.includes(userId);
+  const isSuperAdmin = (userId: number): boolean => env.admin.superAdminUserId === userId;
 
   // ─── Step 2m: Create Telegram Bot ──────────────────────────────────────
   //  grammy Bot instance with command handlers (/start, /verify, /wallets-*)
@@ -128,6 +188,18 @@ export async function start(): Promise<void> {
     chatService,
     walletService,
     privateKeyAccessService,
+  });
+
+  // ─── Step 2m-ii: Register admin command handlers ─────────────────────
+  //  /memory-status and /offload-status — admin-only status inspection.
+  registerAdminHandlers(bot, {
+    logger,
+    isAdmin,
+    isSuperAdmin,
+    memoryCheckpoint,
+    offloadService,
+    coordination,
+    dataDir: paths.memoryDir,
   });
 
   // ─── Step 2n: Graceful Shutdown Handler ────────────────────────────────
@@ -142,12 +214,29 @@ export async function start(): Promise<void> {
     if (offloadService) {
       await offloadService.close();
     }
+    await scheduler.close();
     primaryWalletStore.close();
     backupWalletStore.close();
     await memory.close();
     await logger.close();
     process.exit(0);
   };
+
+  // ─── Step 2n-ii: Start scheduler timers and polling bridge ──────────
+  //  Startup recovery: schedule L2 for sessions with pending work at boot.
+  scheduler.scheduleStartupRecovery().catch((err) => {
+    logger.error(`[main] scheduler startup recovery failed: ${err}`);
+  });
+  scheduler.scheduleStaleRefreshTimer();
+  scheduler.scheduleColdSessionCleanup();
+
+  // Start polling bridge (Phase 2 migration) — watches checkpoint file
+  // for L1 completions and session activity to drive catch-up triggers.
+  scheduler.startPollingBridge(paths.memoryDir);
+
+  // Start periodic evaluation (60s loop) — re-evaluates timing-based L2 triggers
+  // like force_after_idle and max_interval after the initial evaluation from onL1Completed.
+  scheduler.schedulePeriodicEvaluation();
 
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);

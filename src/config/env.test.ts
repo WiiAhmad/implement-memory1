@@ -36,7 +36,34 @@ describe("parseEnv", () => {
       dimensions: 1536,
     });
 
+    // Admin defaults (no vars set)
+    expect(env.admin.userIds).toEqual([]);
+    expect(env.admin.superAdminUserId).toBeUndefined();
+
     // Memory defaults (no vars set)
+    // Autonomy defaults (no vars set)
+    expect(env.autonomy.schedulerPhase).toBe("none");
+    expect(env.autonomy.checkpointNamespace).toBe("memory_autonomy_state");
+    expect(env.autonomy.checkpointFileLockEnabled).toBe(true);
+    expect(env.autonomy.l2ForceAfterIdleSeconds).toBe(900);
+    expect(env.autonomy.l2StartupRecoveryDelaySeconds).toBe(30);
+    expect(env.autonomy.l2StaleRefreshHours).toBe(24);
+    expect(env.autonomy.personaMaxStaleHours).toBe(24);
+    expect(env.autonomy.personaMinScenes).toBe(1);
+    expect(env.autonomy.personaMinChangedScenes).toBe(1);
+    expect(env.autonomy.sceneStaleAfterDays).toBe(7);
+    expect(env.autonomy.sceneArchiveAfterDays).toBe(21);
+    expect(env.autonomy.sceneMergeThreshold).toBe(0.86);
+    expect(env.autonomy.featureGates.l2ForceAfterIdle).toBe(true);
+    expect(env.autonomy.featureGates.l2StartupRecovery).toBe(false);
+    expect(env.autonomy.featureGates.l2StaleRefresh).toBe(false);
+    expect(env.autonomy.featureGates.personaStaleRefresh).toBe(true);
+    expect(env.autonomy.featureGates.personaForceIfMissing).toBe(true);
+    expect(env.autonomy.featureGates.sceneArchive).toBe(false);
+    expect(env.autonomy.featureGates.sceneMerge).toBe(false);
+    expect(env.autonomy.featureGates.offloadReclaim).toBe(false);
+    expect(env.autonomy.featureGates.offloadL2WaitRetry).toBe(false);
+
     expect(env.memory.storeBackend).toBe("sqlite");
     expect(env.memory.captureEnabled).toBe(true);
     expect(env.memory.l0l1RetentionDays).toBe(0);
@@ -95,6 +122,8 @@ describe("parseEnv", () => {
     expect(env.offload.mmdMaxTokenRatio).toBe(0.2);
     expect(env.offload.l2NullThreshold).toBe(4);
     expect(env.offload.l2TimeoutSeconds).toBe(300);
+    expect(env.offload.l2WaitRetrySeconds).toBe(120);
+    expect(env.offload.l2TimeTriggerRequiresNewOffload).toBe(true);
   });
 
   test("parses offload env vars when set", () => {
@@ -167,8 +196,35 @@ describe("parseEnv", () => {
     expect(env.offload.mmdMaxTokenRatio).toBe(0.15);
     expect(env.offload.l2NullThreshold).toBe(2);
     expect(env.offload.l2TimeoutSeconds).toBe(600);
+    expect(env.offload.l2WaitRetrySeconds).toBe(120);
+    expect(env.offload.l2TimeTriggerRequiresNewOffload).toBe(true);
     expect(env.memory.sceneExtractionTimeoutMs).toBe(450_000);
   });
+
+  test("parses new Phase 4 offload env vars", () => {
+    const env = parseEnv({
+      BOT_TOKEN: "123456:telegram-token",
+      MEMORY_AGENT: "data",
+      PROVIDER: "openai",
+      OPENAI_API_KEY: "sk-chat",
+      BASE_URL: "https://api.openai.com/v1",
+      MODEL: "gpt-4o-mini",
+      EMBEDDING_BASE_URL: "https://api.openai.com/v1",
+      EMBEDDING_API_KEY: "sk-embed",
+      EMBEDDING_MODEL: "text-embedding-3-small",
+      EMBEDDING_DIMENSIONS: "1536",
+      OFFLOAD_L2_WAIT_RETRY_SECONDS: "300",
+      OFFLOAD_L2_TIME_TRIGGER_REQUIRES_NEW_OFFLOAD: "false",
+      OFFLOAD_RECLAIM_ENABLED: "true",
+      OFFLOAD_L2_WAIT_RETRY_ENABLED: "true",
+    });
+
+    expect(env.offload.l2WaitRetrySeconds).toBe(300);
+    expect(env.offload.l2TimeTriggerRequiresNewOffload).toBe(false);
+    expect(env.autonomy.featureGates.offloadReclaim).toBe(true);
+    expect(env.autonomy.featureGates.offloadL2WaitRetry).toBe(true);
+  });
+
 });
 
 describe("resolveDataPaths", () => {

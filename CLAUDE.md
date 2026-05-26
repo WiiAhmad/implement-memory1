@@ -130,6 +130,14 @@ Important generated locations:
   local LLM client, and tests.
 - `src/logging/`: console and JSONL loggers.
 - `src/utils/`: path and JSON file helpers.
+- `src/services/scheduler.ts`: autonomous catch-up trigger engine for L2/persona.
+- `src/services/polling-bridge.ts`: checkpoint file watcher for L2 triggers.
+- `src/services/coordination.ts`: cross-system signal bridge (MMD↔scene).
+- `src/memory/autonomy-checkpoint.ts`: namespaced checkpoint for scheduler state.
+- `src/memory/scene-dedup.ts`: root-side scene dedup orchestration.
+- `src/memory/scene-injection.ts`: scene selection & injection budget for prompts.
+- `src/memory/scene-metadata.ts`: scene metadata reader/aggregator.
+- `src/telegram/admin-handlers.ts`: /memory-status, /offload-status, /offload-reclaim.
 
 ## Code Commentary System
 
@@ -175,7 +183,15 @@ All source files (`index.ts` and `src/`) have **numbered step-by-step inline com
 | 34 | `src/telegram/wallet-command-handlers.ts` | Wallet slash-command handlers (a-f) |
 | 35 | `src/offload/index.ts` | OffloadService — L1/L1.5/L2/L3/L4 pipeline (35a-35f, 35c-i - 35c-v) |
 | 36 | `src/agent/index.ts` | Agent module barrel export |
-| 37 | `src/agent/context-agent.ts` | Per-turn pipeline orchestrator (37a-37g, 37a-i - 37a-vii)
+| 37 | `src/agent/context-agent.ts` | Per-turn pipeline orchestrator (37a-37g, 37a-i - 37a-vii) |
+| 38 | `src/memory/autonomy-checkpoint.ts` | Namespaced checkpoint for autonomous trigger state |
+| 39 | `src/memory/scene-dedup.ts` | Root-side scene dedup orchestration |
+| 40 | `src/memory/scene-injection.ts` | Scene selection & injection budget for LLM context |
+| 41 | `src/memory/scene-metadata.ts` | Scene metadata reader/aggregator |
+| 42 | `src/services/scheduler.ts` | Scheduler — catch-up trigger engine for L2 & persona |
+| 43 | `src/services/polling-bridge.ts` | Checkpoint file watcher for L2 catch-up triggers |
+| 44 | `src/services/coordination.ts` | Cross-system signal bridge (MMD→scene, scene→MMD) |
+| 45 | `src/telegram/admin-handlers.ts` | Admin Telegram commands (/memory-status, /offload-*) |
 
 ### Execution Flowchart
 
@@ -224,10 +240,16 @@ flowchart LR
         S16["Step 16<br/>private-key-access.ts<br/>(16a-16e)"]:::step16
     end
 
-    subgraph MEMORY["17-19  Memory Layer"]
+    subgraph MEMORY["17-19,38-41  Memory & Awareness Layer"]
+        direction TB
         S17["Step 17<br/>memory/types.ts"]:::step17
         S18["Step 18<br/>memory-adapter.ts<br/>(18a-18d)"]:::step18
         S19["Step 19<br/>build-memory-config.ts"]:::step19
+
+        S38["Step 38<br/>autonomy-checkpoint.ts"]:::step38
+        S39["Step 39<br/>scene-dedup.ts"]:::step39
+        S40["Step 40<br/>scene-injection.ts"]:::step40
+        S41["Step 41<br/>scene-metadata.ts"]:::step41
     end
 
     subgraph OFFLOAD["20-24,35  Offload Layer"]
@@ -262,10 +284,11 @@ flowchart LR
         S31["Step 31<br/>tools/index.ts"]:::step31
     end
 
-    subgraph TELEGRAM["32-34  Telegram Layer"]
+    subgraph TELEGRAM["32-34,45  Telegram Layer"]
         S32["Step 32<br/>bot.ts<br/>(sub: a-g)"]:::step32
         S33["Step 33<br/>handler.ts<br/>(sub: a-d)"]:::step33
         S34["Step 34<br/>wallet-commands.ts<br/>(sub: a-f)"]:::step34
+        S45["Step 45<br/>admin-handlers.ts"]:::step45
     end
 
     subgraph AGENT["36-37  Agent Layer"]
@@ -299,6 +322,13 @@ flowchart LR
         S37a_vii -.-> S37g
     end
 
+    subgraph SCHEDULER["42-44  Scheduler Layer"]
+        direction TB
+        S42["Step 42<br/>scheduler.ts"]:::step42
+        S43["Step 43<br/>polling-bridge.ts"]:::step43
+        S44["Step 44<br/>coordination.ts"]:::step44
+    end
+
     %% --- Startup dependency chain (solid arrows) ---
     S2a --> S3
     S3 --> S4 --> S5
@@ -310,10 +340,13 @@ flowchart LR
     S15 --> S14
     S14 --> S16
     S17 --> S19 --> S18
+    S18 -.->|provides state| S38
+    S38 -->|checkpoint deps| S42
+    S42 --> S43 & S44
     S25 --> S26 --> S27
     S28 --> S31
-    S32 --> S33 --> S34
-
+    S32 --> S33 & S45
+    S33 --> S34
     %% --- Runtime wiring (dashed arrows) ---
     S29 -.->|dispatch| S37a
     S11 -.->|verify| S33
@@ -325,6 +358,9 @@ flowchart LR
     S35b -.->|resolve session| S37a
     S35d -.->|beforeTurn| S37a_iii
     S35f -.->|afterTurn| S37a_vi
+    S42 -.->|schedule L2| S18
+    S44 -.->|coordination| S37a
+    S42 -.->|notify activity| S37a
 ```
 
 #### Flow description
@@ -335,6 +371,10 @@ flowchart LR
 - **Step 2 (BOOT)** expands into the full 2a-2o initialization sequence in `main.ts`
 - **Step 35 (OFFLOAD)** expands into the OffloadService pipeline (35a-35f)
 - **Step 37 (AGENT)** expands into the per-turn pipeline (37a-37g + 37a-i through 37a-vii)
+- **Step 38 (autonomy-checkpoint)** writes to the `memory_autonomy_state` namespace in the TDAI checkpoint file; read by the scheduler
+- **Step 39-41 (scene utilities)** are root-side orchestrators that read/write TDAI scene data without vendor edits
+- **Step 42-44 (scheduler layer)** form the autonomous catch-up trigger engine with polling bridge and coordination service
+- **Step 45 (admin-handlers)** registers Telegram commands wired into main.ts shutdown lifecycle
 
 ### Maintenance Rules
 
@@ -351,10 +391,21 @@ flowchart LR
 2. Unverified users go through `VerificationService`.
 3. Verified messages call `ChatService.replyToUser()`.
 4. `ChatService` resolves the per-user history and session key.
-5. `ContextAgent` tries `/create-skill`, recalls memory, runs offload
+5. Scheduler `notifyActivity()` updates the autonomy checkpoint timestamp.
+6. `ContextAgent` tries `/create-skill`, recalls memory, runs offload
    `beforeTurn()`, builds the prompt, calls the LLM, runs offload `afterTurn()`,
    and captures the completed turn into memory.
-6. The in-memory chat history is capped by `ChatService.MAX_HISTORY`.
+7. The in-memory chat history is capped by `ChatService.MAX_HISTORY`.
+
+Background catch-up triggers (scheduler, Phase 2+):
+
+- `PollingBridge` watches the TDAI checkpoint file every 2s for L1 completions.
+- On L1 completion, `Scheduler.onL1Completed()` updates sequencing counters and
+  evaluates L2 trigger conditions in priority order.
+- The 60s periodic evaluation loop re-checks timing-based triggers
+  (force_after_idle, max_interval) across all sessions.
+- Startup recovery schedules delayed L2 for sessions with pending work on boot.
+- Stale refresh checks scene index age; cold session cleanup marks idle sessions.
 
 Memory tools available to the model:
 
@@ -362,6 +413,12 @@ Memory tools available to the model:
 - `tdai_conversation_search`
 
 The tools share a per-turn call limit enforced in `ToolHandler`.
+
+Admin commands (Step 45):
+
+- `/memory-status` — show memory pipeline state (checkpoint counters, job status)
+- `/offload-status` — show offload service state
+- `/offload-reclaim --confirm` — run offload data retention cleanup
 
 ## Offload Notes
 
@@ -377,6 +434,33 @@ Offload is optional and controlled by `OFFLOAD_ENABLED`.
 When changing offload behavior, prefer focused tests in `src/offload/*.test.ts`
 and integration coverage in `src/offload/integration.test.ts` for lifecycle
 changes.
+
+## Scheduler & Autonomy Notes
+
+The scheduler is optional and controlled by `MEMORY_SCHEDULER_PHASE`.
+
+- **Phase "none"**: no scheduler code runs (no-ops everywhere).
+- **Phase "observer"**: evaluates L2/persona trigger conditions, logs decisions,
+  never dispatches jobs. Safe for production monitoring.
+- **Phase "active"**: evaluates and dispatches L2/persona jobs through a
+  global concurrency limiter.
+
+Key state is persisted in `memory_autonomy_state` namespace inside the TDAI
+checkpoint file. The `MemoryAutonomyCheckpoint` class wraps the TDAI engine's
+`CheckpointManager` to provide per-session sequencing counters, job status
+guards, and activity signals.
+
+The scheduler migration is a multi-phase effort:
+- **Phase 1**: Visibility & logging (observer mode, status commands).
+- **Phase 2**: Catch-up triggers via polling bridge (active mode).
+- **Phase 3**: Scene maintenance (stale/archive transitions, dedup, injection).
+- **Phase 4**: Offload hardening (MMD size guards, wait-entry retry, reclaim).
+- **Phase 5**: Cross-system coordination (MMD→scene resolution, scene→MMD naming).
+
+When changing scheduler behavior, prefer focused tests in
+`src/services/scheduler.test.ts`, `src/services/polling-bridge.test.ts`,
+and integration coverage in `src/services/scheduler.test.ts` for lifecycle
+changes. Test data is ephemeral (tmp dirs cleaned up per-test).
 
 ## Coding Conventions
 
@@ -415,6 +499,7 @@ For Telegram/auth changes, run:
 ```bash
 bun test src/telegram/handler.test.ts
 bun test src/auth/
+bun test src/telegram/admin-handlers.test.ts
 ```
 
 For OpenAI/tool-loop changes, run:
@@ -429,6 +514,22 @@ For offload changes, run:
 
 ```bash
 bun test src/offload/
+```
+
+For scheduler/autonomy changes, run:
+
+```bash
+bun test src/services/scheduler.test.ts
+bun test src/services/polling-bridge.test.ts
+bun test src/memory/autonomy-checkpoint.test.ts
+```
+
+For scene/memory utility changes, run:
+
+```bash
+bun test src/memory/scene-dedup.test.ts
+bun test src/memory/scene-injection.test.ts
+bun test src/memory/scene-metadata.test.ts
 ```
 
 If tests require network credentials or real Telegram/OpenAI services, do not
@@ -447,3 +548,9 @@ Update `README.md` when changing:
 
 Update `docs/plans/` or `docs/specs/` for larger design changes that need a
 durable implementation record.
+
+## Rollback Procedures
+
+See `docs/ops/rollback-scheduler.md` for the scheduler migration rollback plan,
+covering all three phases with per-fileset rollback commands and order of
+operations.

@@ -19,6 +19,7 @@ import type { Logger } from "../../TencentDB-Agent-Memory/src/core/types.ts";
 import type { OffloadConfig, OffloadEntry, ToolPair } from "./types.ts";
 import { configureL3TokenTracker, compressSession } from "./compressor.ts";
 import type { CompressionResult } from "./compressor.ts";
+import { createL3TokenCounter } from "../../TencentDB-Agent-Memory/src/offload/l3-token-counter.js";
 import { join } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import OpenAI from "openai";
@@ -32,9 +33,10 @@ import { parseMmdMeta } from "../../TencentDB-Agent-Memory/src/offload/mmd-meta.
 import { checkL2Trigger, backfillNodeIds } from "../../TencentDB-Agent-Memory/src/offload/pipelines/l2-mermaid.ts";
 import { injectMmdIntoMessages } from "../../TencentDB-Agent-Memory/src/offload/mmd-injector.ts";
 import { reclaimOffloadData } from "../../TencentDB-Agent-Memory/src/offload/reclaimer.ts";
-import type { ReclaimConfig, ReclaimStats } from "../../TencentDB-Agent-Memory/src/offload/reclaimer.ts";
+import type { ReclaimStats } from "../../TencentDB-Agent-Memory/src/offload/reclaimer.ts";
 import type { L15Request, L2Request } from "../../TencentDB-Agent-Memory/src/offload/backend-client.ts";
 import type { PluginConfig } from "../../TencentDB-Agent-Memory/src/offload/types.ts";
+import type { CoordinationService } from "../services/coordination.ts";
 
 export interface OffloadServiceOptions {
   enabled: boolean;
@@ -43,6 +45,7 @@ export interface OffloadServiceOptions {
   getDataDir: () => string;
   baseUrl: string;
   apiKey: string;
+  coordination?: CoordinationService;
 }
 
 export interface BeforeTurnParams {
@@ -85,6 +88,9 @@ export class OffloadService {
   private readonly l2PollIntervalMs = 5_000;
   private reclaimTimer: ReturnType<typeof setInterval> | null = null;
   private retentionDays = 0;
+  private reclaimFeatureGate = false;
+  private waitRetryFeatureGate = false;
+  private readonly coordination?: CoordinationService;
 
   constructor(opts: OffloadServiceOptions) {
     // ─── Step 35a: Store configuration ──────────────────────────────────
@@ -97,6 +103,8 @@ export class OffloadService {
       model: opts.config.model, temperature: opts.config.temperature,
     };
 
+    this.coordination = opts.coordination;
+
     if (this.enabled) {
       // ─── Step 35a-i: Create session registry for LRU session caching ──
       const dataDir = opts.getDataDir();
@@ -108,14 +116,23 @@ export class OffloadService {
       // ─── Step 35a-iii: Create LocalLlmClient for offload LLM calls ──
       this.llmClient = opts.config.model
         ? createLocalLlmClient(
-            { baseUrl: opts.baseUrl, apiKey: opts.apiKey, model: opts.config.model, temperature: opts.config.temperature },
+            {
+              baseUrl: opts.baseUrl,
+              apiKey: opts.apiKey,
+              model: opts.config.model,
+              temperature: opts.config.temperature,
+              timeoutMs: opts.config.backendTimeoutMs,
+            },
             this.logger,
           )
         : null;
 
       // ─── Step 35a-iv: Schedule data retention reclaim ────────────────
       this.retentionDays = opts.config.offloadRetentionDays;
-      if (this.retentionDays >= 3) this._scheduleReclaim();
+      // Reclaim is gated by both retentionDays >= 3 AND the feature gate
+      this.reclaimFeatureGate = opts.config.reclaimEnabled === true;
+      this.waitRetryFeatureGate = opts.config.waitRetryEnabled === true;
+      if (this.retentionDays >= 3 && this.reclaimFeatureGate) this._scheduleReclaim();
 
       this.logger.info("[offload] OffloadService initialized (enabled)");
       this.logger.info(
@@ -252,6 +269,9 @@ export class OffloadService {
         );
       }
 
+      // Guard MMD size before injection
+      await this.guardMmdSize(manager);
+
       // Inject active MMD
       let finalMessages = result.messages;
       if (this.config.l2Enabled && this.llmClient) {
@@ -312,6 +332,9 @@ export class OffloadService {
         );
       }
 
+      // Guard MMD size before injection
+      await this.guardMmdSize(manager);
+
       if (this.config.l2Enabled && this.llmClient) {
         try {
           const mmdResult = await injectMmdIntoMessages(messages, manager, this.logger, () => this.config.contextWindow, this._toPluginConfig());
@@ -332,7 +355,14 @@ export class OffloadService {
     const boundaryStartIndex = manager.entryCounter;
 
     // ─── Step 35g-i: Flush L1 tool pairs to summaries ───────────────
-    if (this.config.l1Enabled && manager.hasPending()) await this.flushL1(manager);
+    if (this.config.l1Enabled && manager.hasPending()) {
+      this.logger.info(`[offload] [l1] flush reason=after_turn session=${params.userKey} pending=${manager.getPendingCount()}`);
+      await this.flushL1(manager);
+    } else if (manager.hasPending()) {
+      this.logger.info(`[offload] [l1] skipped reason=disabled session=${params.userKey}`);
+    } else {
+      this.logger.debug(`[offload] [l1] skipped reason=no_pending session=${params.userKey}`);
+    }
 
     // ─── Step 35g-ii: L1.5 task boundary detection ──────────────────
     if (this.config.l15Enabled && this.llmClient && params.userText.trim().length >= L15_MIN_CHARS_FOR_JUDGE) {
@@ -411,23 +441,39 @@ export class OffloadService {
     try {
       await appendOffloadEntries(manager.ctx, validatedEntries, undefined, this.logger);
       manager.entryCounter += validatedEntries.length;
-      this.logger.info(`[offload] flushL1: wrote ${validatedEntries.length} entries to offload JSONL`);
+      this.logger.info(`[offload] [l1] wrote ${validatedEntries.length} entries to offload JSONL session=${manager.ctx.sessionKey} fallback=${!offloadEntries || offloadEntries.length === 0}`);
     } catch (err) { this.logger.error(`[offload] flushL1: failed to write entries: ${err}`); }
   }
 
   // ─── Step 35i: L1.5 — Judge task boundary ────────────────────────────
   private async judgeL15(manager: OffloadStateManager, recentMessages: string, startIndex: number): Promise<void> {
-    if (await this.attemptL15(manager, recentMessages, startIndex)) return;
+    if (await this.attemptL15(manager, recentMessages, startIndex)) {
+      this.logger.info(`[offload] [l1.5] judge result=continue|short|long session=${manager.ctx.sessionKey}`);
+      return;
+    }
     for (let attempt = 1; attempt <= 3; attempt++) {
       await this.sleep(3000);
-      if (manager.l15Settled) return;
-      if (await this.attemptL15(manager, recentMessages, startIndex)) return;
+      if (manager.l15Settled) {
+        this.logger.info(`[offload] [l1.5] already_settled attempt=${attempt} session=${manager.ctx.sessionKey}`);
+        return;
+      }
+      if (await this.attemptL15(manager, recentMessages, startIndex)) {
+        this.logger.info(`[offload] [l1.5] judge result=continue|short|long retry=${attempt} session=${manager.ctx.sessionKey}`);
+        return;
+      }
+      this.logger.warn(`[offload] [l1.5] attempt_failed retry=${attempt} session=${manager.ctx.sessionKey}`);
     }
+    this.logger.warn(`[offload] [l1.5] failsafe_triggered session=${manager.ctx.sessionKey}`);
     await this.l15FailSafe(manager, startIndex);
   }
 
   private async attemptL15(manager: OffloadStateManager, recentMessages: string, startIndex: number): Promise<boolean> {
     try {
+      // Enrich recent messages with active scene context for MMD naming (Phase 5)
+      const enrichedMessages = this.coordination
+        ? await this.coordination.enrichL15Context(manager.ctx.sessionKey, recentMessages)
+        : recentMessages;
+
       const allMmdFiles = await listMmds(manager.ctx);
       const mmdMetas: L15Request["availableMmdMetas"] = [];
       for (const mmdFile of allMmdFiles.slice(-10)) {
@@ -443,7 +489,7 @@ export class OffloadService {
       const llmClient = this.llmClient;
       if (!llmClient) return false;
 
-      const resp = await llmClient.l15Judge({ recentMessages, currentMmd, availableMmdMetas: mmdMetas });
+      const resp = await llmClient.l15Judge({ recentMessages: enrichedMessages, currentMmd, availableMmdMetas: mmdMetas });
       const judgment = normalizeJudgment(resp as unknown as Record<string, unknown>);
       if (!judgment) return false;
 
@@ -519,11 +565,64 @@ export class OffloadService {
   }
 
   private async _runL2IfNeeded(manager: OffloadStateManager, reason: string): Promise<void> {
-    if (this.l2Running || !this.llmClient || !this.config.l2Enabled) return;
+    if (this.l2Running) {
+      this.logger.info(`[offload] [l2] skipped reason=already_running session=${manager.ctx.sessionKey}`);
+      return;
+    }
+    if (!this.config.l2Enabled) {
+      this.logger.info(`[offload] [l2] skipped reason=disabled session=${manager.ctx.sessionKey}`);
+      return;
+    }
+    if (!this.llmClient) {
+      this.logger.info(`[offload] [l2] skipped reason=no_model session=${manager.ctx.sessionKey}`);
+      return;
+    }
     this.l2Running = true;
+    this.logger.info(`[offload] [l2] trigger reason=${reason} session=${manager.ctx.sessionKey}`);
+
+    // ─── Wait-entry retry (Phase 4): check for "wait" entries before normal trigger ──
+    try {
+      if (this.waitRetryFeatureGate) {
+        const allEntries = await readAllOffloadEntries(manager.ctx);
+        const waitEntries = allEntries.filter((e) => e.node_id === "wait");
+        if (waitEntries.length > 0) {
+          const oldestWait = waitEntries.reduce((oldest, e) =>
+            (e.timestamp && (!oldest.timestamp || e.timestamp < oldest.timestamp)) ? e : oldest,
+            waitEntries[0]!,
+          );
+          const waitAgeSec = (Date.now() - new Date(oldestWait.timestamp!).getTime()) / 1000;
+          if (waitAgeSec >= this.config.l2WaitRetrySeconds) {
+            this.logger.info(`[offload] [l2] wait_retry: ${waitEntries.length} wait entries, oldest ${waitAgeSec.toFixed(0)}s old (threshold ${this.config.l2WaitRetrySeconds}s)`);
+            // Clear wait entries to "null" so they get picked up by L2 processing
+            for (const e of allEntries) {
+              if (e.node_id === "wait") e.node_id = null;
+            }
+            // Rewrite the entries back to disk
+            await rewriteAllOffloadEntries(manager.ctx, allEntries);
+            this.logger.info(`[offload] [l2] wait_retry: reset ${waitEntries.length} entries from "wait" to null, triggering L2`);
+            const result = await checkL2Trigger(manager, this._toPluginConfig(), this.logger);
+            if (result.shouldTrigger) {
+              await this._runL2Pipeline(manager, result.entriesByMmd, "wait_retry");
+            } else {
+              this.logger.info(`[offload] [l2] wait_retry: no trigger after reset (expected if wait entries were already retried)`);
+            }
+            this.l2Running = false;
+            return;
+          } else {
+            this.logger.info(`[offload] [l2] wait_retry: ${waitEntries.length} wait entries found, oldest ${waitAgeSec.toFixed(0)}s old (not yet >= ${this.config.l2WaitRetrySeconds}s)`);
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`[offload] [l2] wait_retry check failed: ${err}`);
+    }
+
     try {
       const result = await checkL2Trigger(manager, this._toPluginConfig(), this.logger);
-      if (!result.shouldTrigger) return;
+      if (!result.shouldTrigger) {
+        this.logger.info(`[offload] [l2] skipped reason=no_trigger session=${manager.ctx.sessionKey}`);
+        return;
+      }
       await this._runL2Pipeline(manager, result.entriesByMmd, reason);
     } catch (err) { this.logger.error(`[offload] L2 check error: ${err}`); }
     finally {
@@ -568,6 +667,18 @@ export class OffloadService {
           } else if (resp.mmdContent) await writeMmd(manager.ctx, mmdFile, resp.mmdContent);
           const mmdAfterWrite = await readMmd(manager.ctx, mmdFile);
           await backfillNodeIds(manager.ctx, resp.nodeMapping ?? {}, batchWaitIds, this.logger, { mmdFallbackText: mmdAfterWrite ?? existingMmd ?? "", mmdPrefix });
+
+          // ─── Phase 5: Check MMD completion → signal scene resolution ──
+          if (mmdAfterWrite && this.coordination) {
+            const allDone = !/status:\s*(doing|todo)/i.test(mmdAfterWrite);
+            if (allDone) {
+              // Extract label from mmdFile (strip prefix and extension)
+              const label = mmdFile.replace(/^\d+-/, "").replace(/\.mmd$/, "");
+              this.coordination.onMmdCompleted(manager.ctx.sessionKey, label).catch((err: unknown) =>
+                this.logger.warn(`[offload] coordination.onMmdCompleted failed: ${err}`),
+              );
+            }
+          }
         } catch (err) { this.logger.error(`[offload] L2 ${mmdFile} batch ${bIdx + 1}/${batches.length} failed: ${err}`); }
       }
     }
@@ -580,6 +691,94 @@ export class OffloadService {
       emergencyCompressRatio: this.config.emergencyCompressRatio, emergencyTargetRatio: this.config.emergencyTargetRatio,
       aggressiveDeleteRatio: this.config.aggressiveDeleteRatio, mildOffloadScanRatio: this.config.mildOffloadScanRatio,
       mmdMaxTokenRatio: this.config.mmdMaxTokenRatio, defaultContextWindow: this.config.contextWindow };
+  }
+
+  // ─── Step 35o: MMD size guard — Truncate oversized MMD files ─────────
+  //  Called before MMD injection in beforeTurn and onStepFinish.
+  //  If the active MMD exceeds the token budget, truncate it to fit.
+  private async guardMmdSize(manager: OffloadStateManager): Promise<void> {
+    if (!this.config.l2Enabled) return;
+
+    const activeMmdFile = manager.getActiveMmdFile();
+    if (!activeMmdFile) return;
+
+    try {
+      const mmdContent = await readMmd(manager.ctx, activeMmdFile);
+      if (!mmdContent) return;
+
+      const countTokens = createL3TokenCounter(this._toPluginConfig(), this.logger);
+      const tokenCount = countTokens(mmdContent);
+      const maxTokens = Math.floor(this.config.contextWindow * this.config.mmdMaxTokenRatio);
+
+      if (tokenCount > maxTokens) {
+        this.logger.info(`[offload] MMD size guard: session=${manager.ctx.sessionKey}, activeMmd=${activeMmdFile}, tokens=${tokenCount}, max=${maxTokens} — truncating`);
+
+        // Truncate: take the first portion that fits within budget
+        const truncated = await this.truncateMmdContent(mmdContent, maxTokens);
+        if (truncated && truncated !== mmdContent) {
+          await writeMmd(manager.ctx, activeMmdFile, truncated);
+          this.logger.info(`[offload] MMD size guard: truncated ${activeMmdFile} from ${mmdContent.length} chars to ${truncated.length} chars`);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(`[offload] MMD size guard failed: ${err}`);
+    }
+  }
+
+  /**
+   * Truncate MMD content to fit within the token budget.
+   * Strategy: progressively remove the oldest (lowest priority) nodes from
+   * the MMD until it fits. If that's not possible, truncate to first N characters.
+   */
+  private async truncateMmdContent(mmdContent: string, maxTokens: number): Promise<string | null> {
+    const countTokens = createL3TokenCounter(this._toPluginConfig(), this.logger);
+
+    // Quick check: estimate tokens roughly (4 chars per token for Mermaid diagrams)
+    const estimatedTokens = countTokens(mmdContent);
+    if (estimatedTokens <= maxTokens) return mmdContent;
+
+    // Try to drop non-essential lines (comment lines, empty lines) first
+    const lines = mmdContent.split("\n");
+    const essentialLines = lines.filter((l) => l.trim() && !l.trim().startsWith("%%"));
+    if (essentialLines.length > 0 && countTokens(essentialLines.join("\n")) <= maxTokens) {
+      return essentialLines.join("\n");
+    }
+
+    // Last resort: take first N tokens worth of content
+    // Rough character-to-token approximation (4 chars ≈ 1 token for Mermaid)
+    const maxChars = maxTokens * 4;
+    if (mmdContent.length > maxChars) {
+      // Try to cut at a line boundary
+      const truncatedLines: string[] = [];
+      let charCount = 0;
+      for (const line of lines) {
+        if (charCount + line.length + 1 > maxChars) break;
+        truncatedLines.push(line);
+        charCount += line.length + 1;
+      }
+      if (truncatedLines.length > 0) {
+        truncatedLines.push("%% -- truncated by MMD size guard --");
+        return truncatedLines.join("\n");
+      }
+    }
+
+    return null;
+  }
+
+  // ─── Step 35p: Run reclaim on demand — called by /offload-reclaim admin command ─
+  async runReclaim(): Promise<ReclaimStats | null> {
+    if (!this.enabled || !this.reclaimFeatureGate || this.retentionDays < 3) return null;
+    try {
+      const stats: ReclaimStats = await reclaimOffloadData(this.getDataDir(), {
+        retentionDays: this.retentionDays,
+        logMaxSizeMb: this.config.logMaxSizeMb,
+      }, this.logger);
+      this.logger.info(`[offload] runReclaim: jsonl=${stats.deletedJsonl}, refs=${stats.deletedRefs}, mmds=${stats.deletedMmds}, logs=${stats.truncatedLogs}, registry=${stats.prunedRegistryEntries}`);
+      return stats;
+    } catch (err) {
+      this.logger.error(`[offload] runReclaim error: ${err}`);
+      return null;
+    }
   }
 }
 

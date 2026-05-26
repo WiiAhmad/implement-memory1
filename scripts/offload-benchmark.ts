@@ -36,15 +36,15 @@ const noopLogger = {
 function config(overrides?: Partial<OffloadConfig>): OffloadConfig {
   return {
     enabled: true,
-    model: undefined,
+    model: "gpt-5.4-mini",
     mode: "local",
-    temperature: 0.2,
+    temperature: 0.3,
     forceTriggerThreshold: 4,
-    contextWindow: 128_000,
+    contextWindow: 400_000,
     maxPairsPerBatch: 20,
-    l1Enabled: false,
-    l15Enabled: false,
-    l2Enabled: false,
+    l1Enabled: true,
+    l15Enabled: true,
+    l2Enabled: true,
     offloadRetentionDays: 0,
     logMaxSizeMb: 50,
     backendUrl: undefined,
@@ -117,8 +117,8 @@ async function main() {
     config: config(),
     logger: noopLogger,
     getDataDir: () => tempDir,
-    baseUrl: "https://api.openai.com/v1",
-    apiKey: "sk-bench",
+    baseUrl: "http://127.0.0.1:8317/api/provider/codex",
+    apiKey: "ccs-internal-managed",
   });
 
   console.log("\n\x1b[1m═══ Offload Performance Benchmark ═══\x1b[0m\n");
@@ -171,8 +171,8 @@ async function main() {
     config: localConfig,
     logger: noopLogger,
     getDataDir: () => tempDir,
-    baseUrl: "https://api.openai.com/v1",
-    apiKey: "sk-bench",
+    baseUrl: "http://127.0.0.1:8317/api/provider/codex",
+    apiKey: "ccs-internal-managed",
   });
 
   const msg50 = makeMessages(50, 300);
@@ -257,8 +257,8 @@ async function main() {
     config: config(),
     logger: noopLogger,
     getDataDir: () => tempDir,
-    baseUrl: "https://api.openai.com/v1",
-    apiKey: "sk-bench",
+    baseUrl: "http://127.0.0.1:8317/api/provider/codex",
+    apiKey: "ccs-internal-managed",
   });
 
   // First call to create session

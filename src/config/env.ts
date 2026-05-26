@@ -9,6 +9,19 @@
 import { z } from "zod";
 
 // ─── Step 3a: Define the Zod validation schema ─────────────────────────
+// Helper: parse "true"/"false"/"1"/"0" as boolean
+// In Zod v4, .default() on a pipe injects at the input level (pre-transform),
+// so we set the default after transform at the boolean output level.
+const boolString = z
+  .enum(["true", "false", "1", "0"])
+  .transform((v) => v === "true" || v === "1");
+
+/** Create a boolString field with a given default (boolean). */
+function boolField(defaultVal: boolean) {
+  return boolString.default(defaultVal as any) as z.ZodDefault<
+    ReturnType<typeof boolString>
+  >;
+}
 //  Each env var has: min length, default value, type coercion, or enum.
 //  Keys are uppercase with underscores to match .env conventions.
 //  Core vars are required (BOT_TOKEN, OPENAI_API_KEY, MODEL, etc).
@@ -33,27 +46,48 @@ const EnvSchema = z.object({
   // Store
   MEMORY_STORE_BACKEND: z.enum(["sqlite"]).default("sqlite"),
 
+  // ── Autonomy (Checkpoint & Scheduler) ─────────────────────────────────────
+  MEMORY_SCHEDULER_PHASE: z.enum(["none", "observer", "active"]).default("none"),
+  MEMORY_L2_FORCE_AFTER_IDLE_SECONDS: z.coerce.number().int().positive().default(900),
+  MEMORY_L2_STARTUP_RECOVERY_DELAY_SECONDS: z.coerce.number().int().min(0).default(30),
+  MEMORY_L2_STALE_REFRESH_HOURS: z.coerce.number().int().positive().default(24),
+  MEMORY_PERSONA_MAX_STALE_HOURS: z.coerce.number().int().positive().default(24),
+  MEMORY_PERSONA_MIN_SCENES: z.coerce.number().int().min(1).default(1),
+  MEMORY_PERSONA_MIN_CHANGED_SCENES: z.coerce.number().int().min(1).default(1),
+  MEMORY_SCENE_STALE_AFTER_DAYS: z.coerce.number().int().positive().default(7),
+  MEMORY_SCENE_ARCHIVE_AFTER_DAYS: z.coerce.number().int().positive().default(21),
+  MEMORY_SCENE_MERGE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.86),
+
+  // ── Admin Identity ─────────────────────────────────────────────────────
+  ADMIN_USER_IDS: z.string().default("").transform((v) =>
+    v.split(",").map((s) => s.trim()).filter(Boolean).map(Number)
+  ).pipe(z.array(z.number().int().positive())),
+  SUPER_ADMIN_USER_ID: z.coerce.number().int().positive().optional(),
+  MEMORY_AUTONOMY_CHECKPOINT_NAMESPACE: z.string().default("memory_autonomy_state"),
+  MEMORY_AUTONOMY_CHECKPOINT_FILE_LOCK_ENABLED: boolField(true),
+
+  // ── TDAI Memory Feature Gates ─────────────────────────────────────────────
+  MEMORY_L2_FORCE_AFTER_IDLE_ENABLED: boolField(true),
+  MEMORY_L2_STARTUP_RECOVERY_ENABLED: boolField(false),
+  MEMORY_L2_STALE_REFRESH_ENABLED: boolField(false),
+  MEMORY_PERSONA_STALE_REFRESH_ENABLED: boolField(true),
+  MEMORY_PERSONA_FORCE_IF_MISSING_ENABLED: boolField(true),
+  MEMORY_SCENE_ARCHIVE_ENABLED: boolField(false),
+  MEMORY_SCENE_MERGE_ENABLED: boolField(false),
+
+  // ── Offload Feature Gates ─────────────────────────────────────────────────
+  OFFLOAD_RECLAIM_ENABLED: boolField(false),
+  OFFLOAD_L2_WAIT_RETRY_ENABLED: boolField(false),
+
   // Capture
-  MEMORY_CAPTURE_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  MEMORY_CAPTURE_ENABLED: boolField(true),
   MEMORY_L0L1_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
-  MEMORY_ALLOW_AGGRESSIVE_CLEANUP: z
-    .enum(["true", "false", "1", "0"])
-    .default("false")
-    .transform((v) => v === "true" || v === "1"),
+  MEMORY_ALLOW_AGGRESSIVE_CLEANUP: boolField(false),
   MEMORY_CLEAN_TIME: z.string().default("03:00"),
 
   // Extraction
-  MEMORY_EXTRACTION_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
-  MEMORY_EXTRACTION_DEDUP: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  MEMORY_EXTRACTION_ENABLED: boolField(true),
+  MEMORY_EXTRACTION_DEDUP: boolField(true),
   MEMORY_MAX_MEMORIES: z.coerce.number().int().positive().default(20),
 
   // Persona
@@ -66,10 +100,7 @@ const EnvSchema = z.object({
 
   // Pipeline
   MEMORY_PIPELINE_EVERY_N: z.coerce.number().int().positive().default(10),
-  MEMORY_PIPELINE_WARMUP: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  MEMORY_PIPELINE_WARMUP: boolField(true),
   // 5 min (default: 600); aggressive idle triggers wasted L1 runs
   MEMORY_L1_IDLE_TIMEOUT: z.coerce.number().int().positive().default(600),
   MEMORY_L2_DELAY_AFTER_L1: z.coerce.number().int().min(0).default(5),
@@ -78,10 +109,7 @@ const EnvSchema = z.object({
   MEMORY_SESSION_WINDOW_HOURS: z.coerce.number().int().positive().default(24),
 
   // Recall
-  MEMORY_RECALL_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  MEMORY_RECALL_ENABLED: boolField(true),
   MEMORY_RECALL_MAX_RESULTS: z.coerce.number().int().positive().default(5),
   MEMORY_RECALL_SCORE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.3),
   // Embedding is disabled below — hybrid would silently fall back to keyword
@@ -89,45 +117,29 @@ const EnvSchema = z.object({
   MEMORY_RECALL_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
 
   // Embedding
-  MEMORY_EMBEDDING_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("false")
-    .transform((v) => v === "true" || v === "1"),
+  MEMORY_EMBEDDING_ENABLED: boolField(false),
   // Was "openai" but disabled — "none" skips all embedding init
   MEMORY_EMBEDDING_PROVIDER: z.string().default("none"),
 
   // BM25
-  MEMORY_BM25_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  MEMORY_BM25_ENABLED: boolField(true),
   MEMORY_BM25_LANGUAGE: z.string().default("en"),
 
   // ── Offload Module Config ───────────────────────────────────────────────
-  OFFLOAD_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  OFFLOAD_ENABLED: boolField(true),
   OFFLOAD_MODEL: z.string().optional(),
   OFFLOAD_MODE: z.enum(["local", "backend"]).default("local"),
   OFFLOAD_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.2),
   OFFLOAD_FORCE_TRIGGER_THRESHOLD: z.coerce.number().int().positive().default(4),
   OFFLOAD_CONTEXT_WINDOW: z.coerce.number().int().positive().default(128_000),
   OFFLOAD_MAX_PAIRS_PER_BATCH: z.coerce.number().int().positive().default(20),
-  OFFLOAD_L1_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
-  OFFLOAD_L15_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
-  OFFLOAD_L2_ENABLED: z
-    .enum(["true", "false", "1", "0"])
-    .default("true")
-    .transform((v) => v === "true" || v === "1"),
+  OFFLOAD_L1_ENABLED: boolField(true),
+  OFFLOAD_L15_ENABLED: boolField(true),
+  OFFLOAD_L2_ENABLED: boolField(true),
   OFFLOAD_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
   OFFLOAD_LOG_MAX_SIZE_MB: z.coerce.number().int().min(0).default(50),
+  OFFLOAD_L2_WAIT_RETRY_SECONDS: z.coerce.number().int().positive().default(120),
+  OFFLOAD_L2_TIME_TRIGGER_REQUIRES_NEW_OFFLOAD: boolField(true),
   OFFLOAD_BACKEND_URL: z.union([z.string().url(), z.literal("")]).optional(),
   OFFLOAD_BACKEND_API_KEY: z.string().optional(),
   OFFLOAD_BACKEND_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
@@ -162,6 +174,39 @@ export interface AppEnv {
     apiKey: string;
     model: string;
     dimensions: number;
+  };
+
+  /** Autonomy checkpoint and scheduler configuration. */
+  autonomy: {
+    schedulerPhase: "none" | "observer" | "active";
+    checkpointNamespace: string;
+    checkpointFileLockEnabled: boolean;
+    l2ForceAfterIdleSeconds: number;
+    l2StartupRecoveryDelaySeconds: number;
+    l2StaleRefreshHours: number;
+    personaMaxStaleHours: number;
+    personaMinScenes: number;
+    personaMinChangedScenes: number;
+    sceneStaleAfterDays: number;
+    sceneArchiveAfterDays: number;
+    sceneMergeThreshold: number;
+    featureGates: {
+      l2ForceAfterIdle: boolean;
+      l2StartupRecovery: boolean;
+      l2StaleRefresh: boolean;
+      personaStaleRefresh: boolean;
+      personaForceIfMissing: boolean;
+      sceneArchive: boolean;
+      sceneMerge: boolean;
+      offloadReclaim: boolean;
+      offloadL2WaitRetry: boolean;
+    };
+  };
+
+  /** Admin identity configuration. */
+  admin: {
+    userIds: number[];
+    superAdminUserId?: number;
   };
 
   /** TDAI memory configuration. */
@@ -224,6 +269,8 @@ export interface AppEnv {
     mmdMaxTokenRatio: number;
     l2NullThreshold: number;
     l2TimeoutSeconds: number;
+    l2WaitRetrySeconds: number;
+    l2TimeTriggerRequiresNewOffload: boolean;
   };
 }
 
@@ -247,6 +294,37 @@ export function parseEnv(input: Record<string, string | undefined>): AppEnv {
       apiKey: parsed.EMBEDDING_API_KEY,
       model: parsed.EMBEDDING_MODEL,
       dimensions: parsed.EMBEDDING_DIMENSIONS,
+    },
+
+    admin: {
+      userIds: parsed.ADMIN_USER_IDS,
+      superAdminUserId: parsed.SUPER_ADMIN_USER_ID || undefined,
+    },
+
+    autonomy: {
+      schedulerPhase: parsed.MEMORY_SCHEDULER_PHASE,
+      checkpointNamespace: parsed.MEMORY_AUTONOMY_CHECKPOINT_NAMESPACE,
+      checkpointFileLockEnabled: parsed.MEMORY_AUTONOMY_CHECKPOINT_FILE_LOCK_ENABLED,
+      l2ForceAfterIdleSeconds: parsed.MEMORY_L2_FORCE_AFTER_IDLE_SECONDS,
+      l2StartupRecoveryDelaySeconds: parsed.MEMORY_L2_STARTUP_RECOVERY_DELAY_SECONDS,
+      l2StaleRefreshHours: parsed.MEMORY_L2_STALE_REFRESH_HOURS,
+      personaMaxStaleHours: parsed.MEMORY_PERSONA_MAX_STALE_HOURS,
+      personaMinScenes: parsed.MEMORY_PERSONA_MIN_SCENES,
+      personaMinChangedScenes: parsed.MEMORY_PERSONA_MIN_CHANGED_SCENES,
+      sceneStaleAfterDays: parsed.MEMORY_SCENE_STALE_AFTER_DAYS,
+      sceneArchiveAfterDays: parsed.MEMORY_SCENE_ARCHIVE_AFTER_DAYS,
+      sceneMergeThreshold: parsed.MEMORY_SCENE_MERGE_THRESHOLD,
+    featureGates: {
+        l2ForceAfterIdle: parsed.MEMORY_L2_FORCE_AFTER_IDLE_ENABLED,
+        l2StartupRecovery: parsed.MEMORY_L2_STARTUP_RECOVERY_ENABLED,
+        l2StaleRefresh: parsed.MEMORY_L2_STALE_REFRESH_ENABLED,
+        personaStaleRefresh: parsed.MEMORY_PERSONA_STALE_REFRESH_ENABLED,
+        personaForceIfMissing: parsed.MEMORY_PERSONA_FORCE_IF_MISSING_ENABLED,
+        sceneArchive: parsed.MEMORY_SCENE_ARCHIVE_ENABLED,
+        sceneMerge: parsed.MEMORY_SCENE_MERGE_ENABLED,
+        offloadReclaim: parsed.OFFLOAD_RECLAIM_ENABLED,
+        offloadL2WaitRetry: parsed.OFFLOAD_L2_WAIT_RETRY_ENABLED,
+      },
     },
 
     memory: {
@@ -307,6 +385,8 @@ export function parseEnv(input: Record<string, string | undefined>): AppEnv {
       mmdMaxTokenRatio: parsed.OFFLOAD_MMD_MAX_TOKEN_RATIO,
       l2NullThreshold: parsed.OFFLOAD_L2_NULL_THRESHOLD,
       l2TimeoutSeconds: parsed.OFFLOAD_L2_TIMEOUT_SECONDS,
+      l2WaitRetrySeconds: parsed.OFFLOAD_L2_WAIT_RETRY_SECONDS,
+      l2TimeTriggerRequiresNewOffload: parsed.OFFLOAD_L2_TIME_TRIGGER_REQUIRES_NEW_OFFLOAD,
     },
   };
 }

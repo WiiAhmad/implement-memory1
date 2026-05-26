@@ -15,6 +15,7 @@ export interface LlmClientConfig {
   apiKey: string;
   model: string;
   temperature: number;
+  timeoutMs?: number;
 }
 
 /**
@@ -41,7 +42,7 @@ export function createLocalLlmClient(
       apiKey: config.apiKey,
       model: config.model,
       temperature: config.temperature ?? 0.2,
-      timeoutMs: 120_000,
+      timeoutMs: config.timeoutMs ?? 120_000,
     },
     logger,
   );

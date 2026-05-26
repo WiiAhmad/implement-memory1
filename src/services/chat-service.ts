@@ -14,8 +14,9 @@ import { ContextAgent } from "../agent/context-agent.ts";
 import type { ContextAgentOptions } from "../agent/context-agent.ts";
 import { buildMemorySessionKey } from "../memory/build-memory-config.ts";
 import type { ChatMessage } from "../openai/chat-client.ts";
+import type { Scheduler } from "./scheduler.ts";
 
-export type ChatServiceOptions = ContextAgentOptions;
+export type ChatServiceOptions = ContextAgentOptions & { scheduler?: Scheduler };
 
 export class ChatService {
   /** Max users tracked in memory before LRU eviction. Prevents unbounded Map growth. */
@@ -29,8 +30,11 @@ export class ChatService {
   private readonly MAX_HISTORY = 20;
   private readonly contextAgent: ContextAgent;
 
+  private readonly scheduler?: Scheduler;
+
   constructor(opts: ChatServiceOptions) {
     this.contextAgent = new ContextAgent(opts);
+    this.scheduler = opts.scheduler;
   }
 
   // ─── Step 29a: Get or create user history with LRU tracking ────────
@@ -67,6 +71,11 @@ export class ChatService {
   async replyToUser(params: { telegramUserId: number; text: string }): Promise<string> {
     const userKey = buildMemorySessionKey(params.telegramUserId);
     const history = this.getOrCreateHistory(params.telegramUserId);
+
+    // Notify scheduler of user activity (Phase 2 catch-up triggers)
+    if (this.scheduler) {
+      this.scheduler.notifyActivity(userKey).catch(() => {});
+    }
 
     const result = await this.contextAgent.reply({
       telegramUserId: params.telegramUserId,
