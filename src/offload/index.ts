@@ -215,10 +215,15 @@ export class OffloadService {
     const client = new OpenAI({ baseURL: this.l4ClientConfig.baseUrl, apiKey: this.l4ClientConfig.apiKey });
     const startedAt = Date.now();
     const userPrompt = buildL4UserPrompt(req);
+    // Reasoning models (o-series, gpt-5) do NOT support the `temperature` parameter.
+    const modelName = this.l4ClientConfig.model!;
     const response = await client.chat.completions.create(
-      { model: this.l4ClientConfig.model!, temperature: this.l4ClientConfig.temperature,
+      {
+        model: modelName,
         messages: [{ role: "system", content: L4_SYSTEM_PROMPT }, { role: "user", content: userPrompt }],
-      }, { signal: AbortSignal.timeout(120_000) },
+        ...(isReasoningModel(modelName) ? {} : { temperature: this.l4ClientConfig.temperature }),
+      },
+      { signal: AbortSignal.timeout(120_000) },
     );
     const raw = response.choices?.[0]?.message?.content ?? "";
     const parsed = parseL4Response(raw);
@@ -780,6 +785,15 @@ export class OffloadService {
       return null;
     }
   }
+}
+
+// ─── Reasoning Model Detection ────────────────────────────────────────────
+// Reasoning models (OpenAI o-series, gpt-5) do NOT support the `temperature` parameter.
+const REASONING_MODEL_PREFIXES = ["o1", "o3", "o4", "gpt-5"];
+
+function isReasoningModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  return REASONING_MODEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────

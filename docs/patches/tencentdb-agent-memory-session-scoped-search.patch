@@ -1,8 +1,77 @@
+diff --git a/bun.lock b/bun.lock
+index f2436a6..36e9b9c 100644
+--- a/bun.lock
++++ b/bun.lock
+@@ -5,12 +5,11 @@
+     "": {
+       "name": "@tencentdb-agent-memory/memory-tencentdb",
+       "dependencies": {
+-        "@ai-sdk/openai": "^3.0.53",
+         "@node-rs/jieba": "^2.0.1",
+         "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
+-        "ai": "^6.0.164",
+         "js-tiktoken": "^1.0.18",
+         "json5": "^2.2.3",
++        "openai": "^6.39.0",
+         "sqlite-vec": "0.1.7-alpha.2",
+         "tsx": "^4.21.0",
+         "undici": "^8.1.0",
+@@ -494,6 +493,8 @@
+ 
+     "onetime": ["onetime@7.0.0", "", { "dependencies": { "mimic-function": "^5.0.0" } }, "sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ=="],
+ 
++    "openai": ["openai@6.39.0", "", { "peerDependencies": { "ws": "^8.18.0", "zod": "^3.25 || ^4.0" }, "optionalPeers": ["ws", "zod"], "bin": { "openai": "bin/cli" } }, "sha512-O61LIsimY3acVabwvomwFhwrnN36yvHY2quIfy9keEcFytGgWeV35yLHQ6NVMLSBxRpHmcg2yuhCnlu2HT4pLQ=="],
++
+     "opik": ["opik@1.11.14", "", { "dependencies": { "@ai-sdk/anthropic": "^3.0.1", "@ai-sdk/google": "^3.0.5", "@ai-sdk/google-vertex": "^4.0.1", "@ai-sdk/openai": "^3.0.7", "ai": "^6.0.13", "ansi-escapes": "^7.0.0", "boxen": "^8.0.1", "chalk": "^5.4.1", "date-fns": "^3.5.0", "dotenv": "^16.5.0", "fast-deep-equal": "^3.1.3", "fast-json-stable-stringify": "^2.1.0", "form-data-encoder": "^4.0.2", "formdata-node": "^6.0.3", "ini": "^5.0.0", "jest-diff": "^29.7.0", "mustache": "^4.2.0", "node-fetch": "^3.3.2", "nunjucks": "^3.2.4", "ora": "^8.2.0", "qs": "^6.13.1", "readable-stream": "^4.7.0", "tslog": "^4.9.3", "url-join": "^5.0.0", "uuid": "^11.0.3", "xxhash-wasm": "^1.1.0" }, "peerDependencies": { "zod": "^3.25.55 || ^4.0.0" } }, "sha512-t4fn/ivmkDxdhrwet4fLvqITYtGl0qTlAj5lxRBtpm7dzVL2nNlZ1KcTNpcUK8KMzDdw5LPebtuC33tBRvHaUw=="],
+ 
+     "ora": ["ora@8.2.0", "", { "dependencies": { "chalk": "^5.3.0", "cli-cursor": "^5.0.0", "cli-spinners": "^2.9.2", "is-interactive": "^2.0.0", "is-unicode-supported": "^2.0.0", "log-symbols": "^6.0.0", "stdin-discarder": "^0.2.2", "string-width": "^7.2.0", "strip-ansi": "^7.1.0" } }, "sha512-weP+BZ8MVNnlCm8c0Qdc1WSWq4Qn7I+9CJGm7Qali6g44e/PUzbjNqJX5NJ9ljlNMosfJvg1fKEGILklK9cwnw=="],
+diff --git a/package.json b/package.json
+index 1891228..d7831c2 100644
+--- a/package.json
++++ b/package.json
+@@ -78,10 +78,9 @@
+     "node": ">=22.16.0"
+   },
+   "dependencies": {
+-    "@ai-sdk/openai": "^3.0.53",
+     "@node-rs/jieba": "^2.0.1",
+     "@tencentdb-agent-memory/tcvdb-text": "^0.1.1",
+-    "ai": "^6.0.164",
++    "openai": "^6.39.0",
+     "js-tiktoken": "^1.0.18",
+     "json5": "^2.2.3",
+     "sqlite-vec": "0.1.7-alpha.2",
 diff --git a/src/adapters/standalone/llm-runner.ts b/src/adapters/standalone/llm-runner.ts
-index 13bf620..6cc48fd 100644
+index 13bf620..020a292 100644
 --- a/src/adapters/standalone/llm-runner.ts
 +++ b/src/adapters/standalone/llm-runner.ts
-@@ -63,6 +63,75 @@ function resolveSandboxedPath(workspaceDir: string, relativePath: string): strin
+@@ -1,5 +1,5 @@
+ /**
+- * StandaloneLLMRunner — powered by Vercel AI SDK (`ai` + `@ai-sdk/openai`).
++ * StandaloneLLMRunner — powered by official OpenAI SDK.
+  *
+  * This runner does NOT depend on OpenClaw's `runEmbeddedPiAgent`. It is designed
+  * for the Hermes Gateway scenario where TDAI runs as an independent Node.js sidecar
+@@ -8,7 +8,7 @@
+  * Capabilities:
+  * - `enableTools: false`: pure text output (L1 extraction, L1 dedup)
+  * - `enableTools: true`: automatic tool-call loop with local file operations
+- *   (L2 scene, L3 persona) via AI SDK's `maxSteps`
++ *   (L2 scene, L3 persona) via manual tool loop
+  *
+  * Tool sandbox:
+  *   When tools are enabled, three basic file operations are exposed:
+@@ -18,8 +18,7 @@
+ 
+ import fsPromises from "node:fs/promises";
+ import path from "node:path";
+-import { generateText, tool, stepCountIs, jsonSchema } from "ai";
+-import { createOpenAI } from "@ai-sdk/openai";
++import OpenAI from "openai";
+ import { report } from "../../core/report/reporter.js";
+ import type {
+   LLMRunner,
+@@ -63,24 +62,140 @@ function resolveSandboxedPath(workspaceDir: string, relativePath: string): strin
    return resolved;
  }
  
@@ -76,10 +145,322 @@ index 13bf620..6cc48fd 100644
 +}
 +
  // ============================
- // Tool definitions (Vercel AI SDK `tool()` format)
+-// Tool definitions (Vercel AI SDK `tool()` format)
++// Tool definitions (OpenAI ChatCompletionTool format)
  // ============================
-@@ -239,7 +308,30 @@ export class StandaloneLLMRunner implements LLMRunner {
-       return text;
+ 
+-function createSandboxedTools(workspaceDir: string, logger?: Logger) {
++type ToolExecutor = (args: Record<string, unknown>) => Promise<string>;
++
++interface ToolSetup {
++  tools: OpenAI.ChatCompletionTool[];
++  executors: Record<string, ToolExecutor>;
++}
++
++function createOpenAITools(workspaceDir: string, logger?: Logger): ToolSetup {
+   return {
+-    read_file: tool({
+-      description: "Read the contents of a file at the given relative path.",
+-      inputSchema: jsonSchema<{ path: string }>({
+-        type: "object",
+-        properties: {
+-          path: { type: "string", description: "Relative file path to read." },
++    tools: [
++      {
++        type: "function" as const,
++        function: {
++          name: "read_file",
++          description: "Read the contents of a file at the given relative path.",
++          parameters: {
++            type: "object",
++            properties: {
++              path: { type: "string", description: "Relative file path to read." },
++            },
++            required: ["path"],
++          },
++        },
++      },
++      {
++        type: "function" as const,
++        function: {
++          name: "write_to_file",
++          description: "Write content to a file at the given relative path. Creates or overwrites.",
++          parameters: {
++            type: "object",
++            properties: {
++              path: { type: "string", description: "Relative file path to write." },
++              content: { type: "string", description: "Content to write." },
++            },
++            required: ["path", "content"],
++          },
++        },
++      },
++      {
++        type: "function" as const,
++        function: {
++          name: "replace_in_file",
++          description: "Replace an exact substring in a file with new content.",
++          parameters: {
++            type: "object",
++            properties: {
++              path: { type: "string", description: "Relative file path." },
++              old_str: { type: "string", description: "Exact string to find and replace." },
++              new_str: { type: "string", description: "Replacement string." },
++            },
++            required: ["path", "old_str", "new_str"],
++          },
+         },
+-        required: ["path"],
+-      }),
+-      execute: (async (args: { path: string }) => {
+-        const resolved = resolveSandboxedPath(workspaceDir, args.path);
+-        if (!resolved) return JSON.stringify({ error: `Path "${args.path}" escapes workspace boundary.` });
++      },
++    ],
++    executors: {
++      read_file: async (args) => {
++        const filePath = String(args.path ?? "");
++        const resolved = resolveSandboxedPath(workspaceDir, filePath);
++        if (!resolved) return JSON.stringify({ error: `Path "${filePath}" escapes workspace boundary.` });
+         try {
+           return await fsPromises.readFile(resolved, "utf-8");
+         } catch (err) {
+@@ -88,55 +203,35 @@ function createSandboxedTools(workspaceDir: string, logger?: Logger) {
+           logger?.warn?.(`${TAG} read_file failed: ${msg}`);
+           return JSON.stringify({ error: msg });
+         }
+-      }) as any,
+-    }),
+-
+-    write_to_file: tool({
+-      description: "Write content to a file at the given relative path. Creates or overwrites.",
+-      inputSchema: jsonSchema<{ path: string; content: string }>({
+-        type: "object",
+-        properties: {
+-          path: { type: "string", description: "Relative file path to write." },
+-          content: { type: "string", description: "Content to write." },
+-        },
+-        required: ["path", "content"],
+-      }),
+-      execute: (async (args: { path: string; content: string }) => {
+-        const resolved = resolveSandboxedPath(workspaceDir, args.path);
+-        if (!resolved) return JSON.stringify({ error: `Path "${args.path}" escapes workspace boundary.` });
++      },
++      write_to_file: async (args) => {
++        const filePath = String(args.path ?? "");
++        const content = String(args.content ?? "");
++        const resolved = resolveSandboxedPath(workspaceDir, filePath);
++        if (!resolved) return JSON.stringify({ error: `Path "${filePath}" escapes workspace boundary.` });
+         try {
+           await fsPromises.mkdir(path.dirname(resolved), { recursive: true });
+-          await fsPromises.writeFile(resolved, args.content, "utf-8");
++          await fsPromises.writeFile(resolved, content, "utf-8");
+           return JSON.stringify({ success: true });
+         } catch (err) {
+           const msg = err instanceof Error ? err.message : String(err);
+           logger?.warn?.(`${TAG} write_to_file failed: ${msg}`);
+           return JSON.stringify({ error: msg });
+         }
+-      }) as any,
+-    }),
+-
+-    replace_in_file: tool({
+-      description: "Replace an exact substring in a file with new content.",
+-      inputSchema: jsonSchema<{ path: string; old_str: string; new_str: string }>({
+-        type: "object",
+-        properties: {
+-          path: { type: "string", description: "Relative file path." },
+-          old_str: { type: "string", description: "Exact string to find and replace." },
+-          new_str: { type: "string", description: "Replacement string." },
+-        },
+-        required: ["path", "old_str", "new_str"],
+-      }),
+-      execute: (async (args: { path: string; old_str: string; new_str: string }) => {
+-        const resolved = resolveSandboxedPath(workspaceDir, args.path);
+-        if (!resolved) return JSON.stringify({ error: `Path "${args.path}" escapes workspace boundary.` });
+-        if (!args.old_str) return JSON.stringify({ error: "old_str cannot be empty." });
++      },
++      replace_in_file: async (args) => {
++        const filePath = String(args.path ?? "");
++        const oldStr = String(args.old_str ?? "");
++        const newStr = String(args.new_str ?? "");
++        const resolved = resolveSandboxedPath(workspaceDir, filePath);
++        if (!resolved) return JSON.stringify({ error: `Path "${filePath}" escapes workspace boundary.` });
++        if (!oldStr) return JSON.stringify({ error: "old_str cannot be empty." });
+         try {
+           const existing = await fsPromises.readFile(resolved, "utf-8");
+-          if (!existing.includes(args.old_str)) {
+-            return JSON.stringify({ error: `old_str not found in file "${args.path}".` });
++          if (!existing.includes(oldStr)) {
++            return JSON.stringify({ error: `old_str not found in file "${filePath}".` });
+           }
+-          const updated = existing.replace(args.old_str, args.new_str);
++          const updated = existing.replace(oldStr, newStr);
+           await fsPromises.writeFile(resolved, updated, "utf-8");
+           return JSON.stringify({ success: true });
+         } catch (err) {
+@@ -144,8 +239,8 @@ function createSandboxedTools(workspaceDir: string, logger?: Logger) {
+           logger?.warn?.(`${TAG} replace_in_file failed: ${msg}`);
+           return JSON.stringify({ error: msg });
+         }
+-      }) as any,
+-    }),
++      },
++    },
+   };
+ }
+ 
+@@ -182,64 +277,137 @@ export class StandaloneLLMRunner implements LLMRunner {
+       `tools=${this.enableTools}, timeout=${timeoutMs}ms`,
+     );
+ 
+-    // Create OpenAI-compatible provider via AI SDK
+-    // Use "compatible" mode to call /chat/completions (not Responses API),
+-    // which works with all OpenAI-compatible backends (DeepSeek, Qwen, etc.)
+-    const provider = createOpenAI({
++    const client = new OpenAI({
+       baseURL: this.config.baseUrl,
+       apiKey: this.config.apiKey,
+-      compatibility: "compatible",
+     });
+ 
+-    // For pure text tasks like L1 extraction, avoid exposing any tools.
+-    const tools = this.enableTools
+-      ? createSandboxedTools(workspaceDir, this.logger)
+-      : undefined;
++    // Build initial messages
++    const messages: Array<OpenAI.ChatCompletionMessageParam> = [];
++    if (params.systemPrompt) {
++      messages.push({ role: "system", content: params.systemPrompt });
++    }
++    messages.push({ role: "user", content: params.prompt });
++
++    // Set up tools (if enabled)
++    const { tools, executors } = this.enableTools
++      ? createOpenAITools(workspaceDir, this.logger)
++      : { tools: undefined as OpenAI.ChatCompletionTool[] | undefined, executors: {} as Record<string, ToolExecutor> };
++
++    const hasTools = tools !== undefined && tools.length > 0;
++    const maxSteps = this.enableTools ? MAX_TOOL_ITERATIONS : 1;
+ 
+     try {
+-      const result = await generateText({
+-        model: provider.chat(this.model),
+-        system: params.systemPrompt,
+-        prompt: params.prompt,
+-        ...(tools ? { tools } : {}),
+-        stopWhen: stepCountIs(this.enableTools ? MAX_TOOL_ITERATIONS : 1),
+-        maxOutputTokens: maxTokens,
+-        abortSignal: AbortSignal.timeout(timeoutMs),
+-      });
+-
+-      const text = result.text.trim();
+-      const totalMs = Date.now() - runStartMs;
++      for (let step = 0; step < maxSteps; step++) {
++        const response = await client.chat.completions.create(
++          {
++            model: this.model,
++            messages,
++            ...(hasTools ? { tools } : {}),
++            max_tokens: maxTokens,
++          } as OpenAI.ChatCompletionCreateParamsNonStreaming,
++          { signal: AbortSignal.timeout(timeoutMs) },
++        );
++
++        const choice = response.choices?.[0];
++        if (!choice?.message) throw new Error("No response from LLM");
++
++        const message = choice.message;
++
++        // Push assistant message to conversation
++        const assistantMsg: OpenAI.ChatCompletionAssistantMessageParam = {
++          role: "assistant",
++          content: message.content ?? null,
++        };
++        if (message.tool_calls && message.tool_calls.length > 0) {
++          assistantMsg.tool_calls = message.tool_calls.map((tc) => ({
++            id: tc.id,
++            type: "function" as const,
++            function: { name: tc.function.name, arguments: tc.function.arguments },
++          }));
++        }
++        messages.push(assistantMsg);
++
++        // Handle tool calls
++        if (message.tool_calls && message.tool_calls.length > 0 && hasTools) {
++          for (const tc of message.tool_calls) {
++            let args: Record<string, unknown> = {};
++            try { args = JSON.parse(tc.function.arguments); } catch { /* use empty args */ }
++
++            const executor = executors[tc.function.name];
++            const resultText = executor
++              ? await executor(args)
++              : JSON.stringify({ error: `Unknown tool: ${tc.function.name}` });
++
++            messages.push({
++              role: "tool",
++              tool_call_id: tc.id,
++              content: resultText,
++            } as OpenAI.ChatCompletionToolMessageParam);
++          }
++          continue;
++        }
+ 
+-      this.logger?.debug?.(
+-        `${TAG} run() completed: ${totalMs}ms, steps=${result.steps.length}, output=${text.length} chars`,
+-      );
++        // No tool calls — return text content
++        const text = message.content?.trim() ?? "";
++        const totalMs = Date.now() - runStartMs;
+ 
+-      // Log tool usage if any
+-      if (result.steps.length > 1) {
+-        const toolCalls = result.steps.flatMap((s) => s.toolCalls ?? []);
+         this.logger?.debug?.(
+-          `${TAG} Tool calls: ${toolCalls.map((tc) => tc.toolName).join(", ")}`,
++          `${TAG} run() completed: ${totalMs}ms, steps=${step + 1}, output=${text.length} chars`,
+         );
+-      }
+ 
+-      // Metric
+-      if (params.instanceId) {
+-        report("llm_call", {
+-          taskId: params.taskId,
+-          provider: "standalone",
+-          model: this.model,
+-          inputLength: params.prompt.length,
+-          outputLength: text.length,
+-          totalDurationMs: totalMs,
+-          success: true,
+-          error: null,
+-        });
++        // Log tool usage if any
++        if (step > 0) {
++          const toolCalls = messages.filter((m) => m.role === "tool");
++          this.logger?.debug?.(
++            `${TAG} Tool calls: ${toolCalls.length} total`,
++          );
++        }
++
++        // Metric
++        if (params.instanceId) {
++          report("llm_call", {
++            taskId: params.taskId,
++            provider: "standalone",
++            model: this.model,
++            inputLength: params.prompt.length,
++            outputLength: text.length,
++            totalDurationMs: totalMs,
++            success: true,
++            error: null,
++          });
++        }
++
++        return text;
+       }
+ 
+-      return text;
++      throw new Error(`LLM reached max steps (${maxSteps}) without producing a final answer`);
      } catch (err) {
        const totalMs = Date.now() - runStartMs;
 -      const errMsg = err instanceof Error ? err.message : String(err);
@@ -730,10 +1111,39 @@ index 8585b50..157afc3 100644
  
  /** Search parameters for L0 conversation search. */
 diff --git a/src/offload/local-llm/llm-caller.ts b/src/offload/local-llm/llm-caller.ts
-index 95ae691..7175597 100644
+index 95ae691..0fd3572 100644
 --- a/src/offload/local-llm/llm-caller.ts
 +++ b/src/offload/local-llm/llm-caller.ts
-@@ -29,6 +29,75 @@ export interface CallLlmOpts {
+@@ -1,15 +1,24 @@
+ /**
+  * Unified LLM caller for offload local mode.
+  *
+- * Uses Vercel AI SDK (`ai` + `@ai-sdk/openai`) with "compatible" mode
+- * to support any OpenAI-compatible backend.
++ * Uses the official OpenAI SDK for OpenAI-compatible API calls.
+  */
+-import { generateText } from "ai";
+-import { createOpenAI } from "@ai-sdk/openai";
++import OpenAI from "openai";
+ import type { PluginLogger } from "../types.js";
+ 
+ const TAG = "[context-offload] [local-llm]";
+ 
++/**
++ * Known reasoning model prefixes that do NOT support the `temperature` parameter.
++ * Reasoning models (o-series, gpt-5) either ignore temperature or error on it.
++ */
++const REASONING_MODEL_PREFIXES = ["o1", "o3", "o4", "gpt-5"];
++
++function isReasoningModel(model: string): boolean {
++  const lower = model.toLowerCase();
++  return REASONING_MODEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
++}
++
+ export interface LlmCallerConfig {
+   baseUrl: string;
+   apiKey: string;
+@@ -29,6 +38,75 @@ export interface CallLlmOpts {
    label?: string;
  }
  
@@ -809,7 +1219,46 @@ index 95ae691..7175597 100644
  /**
   * Call LLM with the given prompts and return the text response.
   * Throws on timeout or API errors.
-@@ -73,7 +142,15 @@ export async function callLlm(
+@@ -48,22 +126,27 @@ export async function callLlm(
+     `systemLen=${opts.systemPrompt.length}, userLen=${opts.userPrompt.length}`,
+   );
+ 
+-  const provider = createOpenAI({
++  const client = new OpenAI({
+     baseURL: config.baseUrl,
+     apiKey: config.apiKey,
+-    compatibility: "compatible",
+   });
+ 
+   try {
+-    const result = await generateText({
+-      model: provider.chat(config.model),
+-      system: opts.systemPrompt,
+-      prompt: opts.userPrompt,
+-      temperature,
+-      abortSignal: AbortSignal.timeout(timeoutMs),
+-    });
+-
+-    const text = result.text.trim();
++    // Reasoning models (o-series, gpt-5) do NOT support the `temperature` parameter.
++    // Omit it entirely so the API uses its default.
++    const response = await client.chat.completions.create(
++      {
++        model: config.model,
++        messages: [
++          { role: "system" as const, content: opts.systemPrompt },
++          { role: "user" as const, content: opts.userPrompt },
++        ],
++        ...(isReasoningModel(config.model) ? {} : { temperature }),
++      },
++      { signal: AbortSignal.timeout(timeoutMs) },
++    );
++
++    const text = response.choices?.[0]?.message?.content?.trim() ?? "";
+     const elapsedMs = Date.now() - startMs;
+ 
+     logger?.info?.(
+@@ -73,7 +156,15 @@ export async function callLlm(
      return text;
    } catch (err) {
      const elapsedMs = Date.now() - startMs;
