@@ -68,7 +68,7 @@ export class ContextAgent {
     }
 
     const recall = await this.recall(userKey, text);
-    this.toolHandler?.resetCallCount();
+    this.toolHandler?.resetCallCount(userKey);
 
     const previousMessages = await this.prepareOffloadMessages(userKey, text, history);
     const promptStartAt = Date.now();
@@ -90,7 +90,7 @@ export class ContextAgent {
         previousMessages: prompt.previousMessages,
         tools: this.toolHandler?.toolDefinitions,
         executeTool: this.toolHandler
-          ? (name, args) => this.toolHandler!.executeTool(name, args)
+          ? (name, args) => this.toolHandler!.executeTool(name, args, userKey)
           : undefined,
         onToolCallResult: this.offloadService
           ? (tc) => {

@@ -101,4 +101,65 @@ describe("createTextHandler", () => {
     expect(chatCalled).toBe(false);
     expect(replies).toEqual([]);
   });
+
+  test("reveals private key from a pending wallet code before chat", async () => {
+    const { ctx, replies } = createCtx("123456");
+    let chatCalled = false;
+    const handler = createTextHandler({
+      verificationService: {
+        isVerified: async () => true,
+        handleUnverifiedInput: async () => ({ kind: "verified" as const }),
+      },
+      chatService: {
+        replyToUser: async () => {
+          chatCalled = true;
+          return "unused";
+        },
+      },
+      privateKeyAccessService: {
+        consumeNextMessage: async () => ({
+          kind: "revealed" as const,
+          publicAddress: "Address111",
+          privateKey: "PrivateKey111",
+        }),
+      },
+    });
+
+    await handler(ctx as never);
+
+    expect(chatCalled).toBe(false);
+    expect(replies).toEqual([
+      "Private key for Address111:\nPrivateKey111",
+    ]);
+  });
+
+  test("cancels pending wallet private key request before chat", async () => {
+    const { ctx, replies } = createCtx("hello");
+    let chatCalled = false;
+    const handler = createTextHandler({
+      verificationService: {
+        isVerified: async () => true,
+        handleUnverifiedInput: async () => ({ kind: "verified" as const }),
+      },
+      chatService: {
+        replyToUser: async () => {
+          chatCalled = true;
+          return "unused";
+        },
+      },
+      privateKeyAccessService: {
+        consumeNextMessage: async () => ({
+          kind: "canceled" as const,
+          reason: "unexpected_message" as const,
+        }),
+      },
+    });
+
+    await handler(ctx as never);
+
+    expect(chatCalled).toBe(false);
+    expect(replies).toEqual([
+      "Private key request canceled. Run /wallets-privatekey <public-address> to request a new code.",
+    ]);
+  });
 });

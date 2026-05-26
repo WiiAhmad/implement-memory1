@@ -35,11 +35,20 @@ export interface OffloadConfig {
   /** LLM model to use for L1/L1.5/L2 calls. Falls back to main chat model. */
   model?: string;
 
+  /** LLM execution mode for library-compatible config. */
+  mode: "local" | "backend";
+
   /** LLM temperature for offload tasks (default: 0.2). */
   temperature: number;
 
+  /** Force-trigger L1 when pending tool pairs reaches this threshold. */
+  forceTriggerThreshold: number;
+
   /** Model context window size (default: 128000 for GPT-4o). */
   contextWindow: number;
+
+  /** Maximum tool pairs sent to one L1/L2 batch. */
+  maxPairsPerBatch: number;
 
   /** L1 tool pair summarization (default: false). */
   l1Enabled: boolean;
@@ -52,6 +61,21 @@ export interface OffloadConfig {
 
   /** Data retention in days (0 = disabled, min effective: 3). */
   offloadRetentionDays: number;
+
+  /** Max total debug log size in MB before reclaim truncates logs. */
+  logMaxSizeMb: number;
+
+  /** Optional backend service URL for library-compatible config. */
+  backendUrl?: string;
+
+  /** Optional backend auth token for library-compatible config. */
+  backendApiKey?: string;
+
+  /** Backend call timeout in milliseconds. */
+  backendTimeoutMs: number;
+
+  /** User identifier for backend offload persistence. */
+  userId?: string;
 
   // ─── Compression Threshold Ratios ────────────────────────────────
 
@@ -91,12 +115,20 @@ export interface OffloadConfig {
 export const DEFAULT_OFFLOAD_CONFIG: OffloadConfig = {
   enabled: false,
   model: undefined,
+  mode: "local",
   temperature: 0.2,
+  forceTriggerThreshold: 4,
   contextWindow: 128_000,
+  maxPairsPerBatch: 20,
   l1Enabled: false,
   l15Enabled: false,
   l2Enabled: false,
   offloadRetentionDays: 0,
+  logMaxSizeMb: 50,
+  backendUrl: undefined,
+  backendApiKey: undefined,
+  backendTimeoutMs: 120_000,
+  userId: undefined,
 
   // Compression threshold ratios (matching PLUGIN_DEFAULTS)
   mildOffloadRatio: 0.85,

@@ -11,6 +11,9 @@ import { ChatService } from "./services/chat-service.ts";
 import { ToolHandler } from "./tools/tool-handler.ts";
 import { createBot } from "./telegram/bot.ts";
 import { ensureRuntimeDirectories, resolveDataPaths } from "./utils/paths.ts";
+import { PrivateKeyAccessService } from "./wallets/private-key-access-service.ts";
+import { WalletService } from "./wallets/wallet-service.ts";
+import { WalletStore } from "./wallets/wallet-store.ts";
 
 export async function start(): Promise<void> {
   const env = parseEnv(process.env);
@@ -26,6 +29,18 @@ export async function start(): Promise<void> {
   const authStore = new JsonAuthStore(paths);
   const verificationService = new VerificationService({
     store: authStore,
+    verificationLogFile: paths.verificationLogFile,
+    logger,
+  });
+  const primaryWalletStore = new WalletStore(paths.walletsDbFile);
+  const backupWalletStore = new WalletStore(paths.walletsBackupDbFile);
+  const walletService = new WalletService({
+    primaryStore: primaryWalletStore,
+    backupStore: backupWalletStore,
+    logger,
+  });
+  const privateKeyAccessService = new PrivateKeyAccessService({
+    walletStore: primaryWalletStore,
     verificationLogFile: paths.verificationLogFile,
     logger,
   });
@@ -66,6 +81,8 @@ export async function start(): Promise<void> {
     logger,
     verificationService,
     chatService,
+    walletService,
+    privateKeyAccessService,
   });
 
   let polling: Promise<void> | null = null;
@@ -77,6 +94,8 @@ export async function start(): Promise<void> {
     if (offloadService) {
       await offloadService.close();
     }
+    primaryWalletStore.close();
+    backupWalletStore.close();
     await memory.close();
     await logger.close();
     process.exit(0);

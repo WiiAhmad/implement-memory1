@@ -509,6 +509,8 @@ function toPluginConfig(config: OffloadConfig): Partial<PluginConfig> {
   return {
     model: config.model,
     temperature: config.temperature,
+    forceTriggerThreshold: config.forceTriggerThreshold,
+    maxPairsPerBatch: config.maxPairsPerBatch,
     l2NullThreshold: config.l2NullThreshold,
     l2TimeoutSeconds: config.l2TimeoutSeconds,
     mildOffloadRatio: config.mildOffloadRatio,

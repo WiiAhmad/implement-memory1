@@ -9,6 +9,9 @@ export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
     storeBackend: env.memory.storeBackend,
     capture: {
       enabled: env.memory.captureEnabled,
+      l0l1RetentionDays: env.memory.l0l1RetentionDays,
+      allowAggressiveCleanup: env.memory.allowAggressiveCleanup,
+      cleanTime: env.memory.cleanTime,
     },
     extraction: {
       enabled: env.memory.extractionEnabled,
@@ -51,11 +54,23 @@ export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
     },
     offload: {
       enabled: env.offload.enabled,
+      mode: env.offload.mode,
       model: env.offload.model,
       temperature: env.offload.temperature,
+      forceTriggerThreshold: env.offload.forceTriggerThreshold,
       defaultContextWindow: env.offload.contextWindow,
+      maxPairsPerBatch: env.offload.maxPairsPerBatch,
       l2NullThreshold: env.offload.l2NullThreshold,
       l2TimeoutSeconds: env.offload.l2TimeoutSeconds,
+      mildOffloadRatio: env.offload.mildOffloadRatio,
+      aggressiveCompressRatio: env.offload.aggressiveCompressRatio,
+      mmdMaxTokenRatio: env.offload.mmdMaxTokenRatio,
+      backendUrl: env.offload.backendUrl,
+      backendApiKey: env.offload.backendApiKey,
+      backendTimeoutMs: env.offload.backendTimeoutMs,
+      offloadRetentionDays: env.offload.offloadRetentionDays,
+      logMaxSizeMb: env.offload.logMaxSizeMb,
+      userId: env.offload.userId,
     },
   };
 }

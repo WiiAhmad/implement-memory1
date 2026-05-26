@@ -37,6 +37,9 @@ describe("parseEnv", () => {
     // Memory defaults (no vars set)
     expect(env.memory.storeBackend).toBe("sqlite");
     expect(env.memory.captureEnabled).toBe(true);
+    expect(env.memory.l0l1RetentionDays).toBe(0);
+    expect(env.memory.allowAggressiveCleanup).toBe(false);
+    expect(env.memory.cleanTime).toBe("03:00");
     expect(env.memory.extractionEnabled).toBe(true);
     expect(env.memory.extractionDedup).toBe(true);
     expect(env.memory.maxMemoriesPerSession).toBe(20);
@@ -64,12 +67,20 @@ describe("parseEnv", () => {
     // Offload defaults (no vars set)
     expect(env.offload.enabled).toBe(false);
     expect(env.offload.model).toBeUndefined();
+    expect(env.offload.mode).toBe("local");
     expect(env.offload.temperature).toBe(0.2);
+    expect(env.offload.forceTriggerThreshold).toBe(4);
     expect(env.offload.contextWindow).toBe(128_000);
+    expect(env.offload.maxPairsPerBatch).toBe(20);
     expect(env.offload.l1Enabled).toBe(false);
     expect(env.offload.l15Enabled).toBe(false);
     expect(env.offload.l2Enabled).toBe(false);
     expect(env.offload.offloadRetentionDays).toBe(0);
+    expect(env.offload.logMaxSizeMb).toBe(50);
+    expect(env.offload.backendUrl).toBeUndefined();
+    expect(env.offload.backendApiKey).toBeUndefined();
+    expect(env.offload.backendTimeoutMs).toBe(120_000);
+    expect(env.offload.userId).toBeUndefined();
 
     // Compression defaults
     expect(env.offload.mildOffloadRatio).toBe(0.85);
@@ -97,12 +108,20 @@ describe("parseEnv", () => {
       EMBEDDING_DIMENSIONS: "1536",
       OFFLOAD_ENABLED: "true",
       OFFLOAD_MODEL: "gpt-4o-mini",
+      OFFLOAD_MODE: "backend",
       OFFLOAD_TEMPERATURE: "0.1",
+      OFFLOAD_FORCE_TRIGGER_THRESHOLD: "5",
       OFFLOAD_CONTEXT_WINDOW: "200000",
+      OFFLOAD_MAX_PAIRS_PER_BATCH: "10",
       OFFLOAD_L1_ENABLED: "true",
       OFFLOAD_L15_ENABLED: "true",
       OFFLOAD_L2_ENABLED: "true",
       OFFLOAD_RETENTION_DAYS: "7",
+      OFFLOAD_LOG_MAX_SIZE_MB: "25",
+      OFFLOAD_BACKEND_URL: "https://offload.example.com",
+      OFFLOAD_BACKEND_API_KEY: "offload-secret",
+      OFFLOAD_BACKEND_TIMEOUT_MS: "90000",
+      OFFLOAD_USER_ID: "telegram-agent",
       OFFLOAD_MILD_RATIO: "0.75",
       OFFLOAD_AGGRESSIVE_RATIO: "0.80",
       OFFLOAD_EMERGENCY_RATIO: "0.90",
@@ -116,12 +135,20 @@ describe("parseEnv", () => {
 
     expect(env.offload.enabled).toBe(true);
     expect(env.offload.model).toBe("gpt-4o-mini");
+    expect(env.offload.mode).toBe("backend");
     expect(env.offload.temperature).toBe(0.1);
+    expect(env.offload.forceTriggerThreshold).toBe(5);
     expect(env.offload.contextWindow).toBe(200_000);
+    expect(env.offload.maxPairsPerBatch).toBe(10);
     expect(env.offload.l1Enabled).toBe(true);
     expect(env.offload.l15Enabled).toBe(true);
     expect(env.offload.l2Enabled).toBe(true);
     expect(env.offload.offloadRetentionDays).toBe(7);
+    expect(env.offload.logMaxSizeMb).toBe(25);
+    expect(env.offload.backendUrl).toBe("https://offload.example.com");
+    expect(env.offload.backendApiKey).toBe("offload-secret");
+    expect(env.offload.backendTimeoutMs).toBe(90_000);
+    expect(env.offload.userId).toBe("telegram-agent");
 
     expect(env.offload.mildOffloadRatio).toBe(0.75);
     expect(env.offload.aggressiveCompressRatio).toBe(0.80);
@@ -146,6 +173,9 @@ describe("resolveDataPaths", () => {
       expect(paths.authDir).toBe(path.join(path.resolve(root), "auth"));
       expect(paths.logsDir).toBe(path.join(path.resolve(root), "logs"));
       expect(paths.memoryDir).toBe(path.join(path.resolve(root), "memory-tdai"));
+      expect(paths.walletsDir).toBe(path.join(path.resolve(root), "wallets"));
+      expect(paths.walletsDbFile).toBe(path.join(paths.walletsDir, "wallets.sqlite"));
+      expect(paths.walletsBackupDbFile).toBe(path.join(paths.walletsDir, "wallets-backup.sqlite"));
       expect(paths.pendingCodesFile).toBe(path.join(paths.authDir, "pending-codes.json"));
       expect(paths.verifiedUsersFile).toBe(path.join(paths.authDir, "verified-users.json"));
       expect(paths.verificationLogFile).toBe(

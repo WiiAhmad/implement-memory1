@@ -22,6 +22,12 @@ const EnvSchema = z.object({
     .enum(["true", "false", "1", "0"])
     .default("true")
     .transform((v) => v === "true" || v === "1"),
+  MEMORY_L0L1_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
+  MEMORY_ALLOW_AGGRESSIVE_CLEANUP: z
+    .enum(["true", "false", "1", "0"])
+    .default("false")
+    .transform((v) => v === "true" || v === "1"),
+  MEMORY_CLEAN_TIME: z.string().default("03:00"),
 
   // Extraction
   MEMORY_EXTRACTION_ENABLED: z
@@ -86,8 +92,11 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true" || v === "1"),
   OFFLOAD_MODEL: z.string().optional(),
+  OFFLOAD_MODE: z.enum(["local", "backend"]).default("local"),
   OFFLOAD_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.2),
+  OFFLOAD_FORCE_TRIGGER_THRESHOLD: z.coerce.number().int().positive().default(4),
   OFFLOAD_CONTEXT_WINDOW: z.coerce.number().int().positive().default(128_000),
+  OFFLOAD_MAX_PAIRS_PER_BATCH: z.coerce.number().int().positive().default(20),
   OFFLOAD_L1_ENABLED: z
     .enum(["true", "false", "1", "0"])
     .default("false")
@@ -101,6 +110,11 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true" || v === "1"),
   OFFLOAD_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
+  OFFLOAD_LOG_MAX_SIZE_MB: z.coerce.number().int().min(0).default(50),
+  OFFLOAD_BACKEND_URL: z.union([z.string().url(), z.literal("")]).optional(),
+  OFFLOAD_BACKEND_API_KEY: z.string().optional(),
+  OFFLOAD_BACKEND_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  OFFLOAD_USER_ID: z.string().optional(),
 
   OFFLOAD_MILD_RATIO: z.coerce.number().min(0).max(1).default(0.85),
   OFFLOAD_AGGRESSIVE_RATIO: z.coerce.number().min(0).max(1).default(0.85),
@@ -132,6 +146,9 @@ export interface AppEnv {
   memory: {
     storeBackend: string;
     captureEnabled: boolean;
+    l0l1RetentionDays: number;
+    allowAggressiveCleanup: boolean;
+    cleanTime: string;
     extractionEnabled: boolean;
     extractionDedup: boolean;
     maxMemoriesPerSession: number;
@@ -161,12 +178,20 @@ export interface AppEnv {
   offload: {
     enabled: boolean;
     model?: string;
+    mode: "local" | "backend";
     temperature: number;
+    forceTriggerThreshold: number;
     contextWindow: number;
+    maxPairsPerBatch: number;
     l1Enabled: boolean;
     l15Enabled: boolean;
     l2Enabled: boolean;
     offloadRetentionDays: number;
+    logMaxSizeMb: number;
+    backendUrl?: string;
+    backendApiKey?: string;
+    backendTimeoutMs: number;
+    userId?: string;
     mildOffloadRatio: number;
     aggressiveCompressRatio: number;
     emergencyCompressRatio: number;
@@ -199,6 +224,9 @@ export function parseEnv(input: Record<string, string | undefined>): AppEnv {
     memory: {
       storeBackend: parsed.MEMORY_STORE_BACKEND,
       captureEnabled: parsed.MEMORY_CAPTURE_ENABLED,
+      l0l1RetentionDays: parsed.MEMORY_L0L1_RETENTION_DAYS,
+      allowAggressiveCleanup: parsed.MEMORY_ALLOW_AGGRESSIVE_CLEANUP,
+      cleanTime: parsed.MEMORY_CLEAN_TIME,
       extractionEnabled: parsed.MEMORY_EXTRACTION_ENABLED,
       extractionDedup: parsed.MEMORY_EXTRACTION_DEDUP,
       maxMemoriesPerSession: parsed.MEMORY_MAX_MEMORIES,
@@ -227,12 +255,20 @@ export function parseEnv(input: Record<string, string | undefined>): AppEnv {
     offload: {
       enabled: parsed.OFFLOAD_ENABLED,
       model: parsed.OFFLOAD_MODEL || undefined,
+      mode: parsed.OFFLOAD_MODE,
       temperature: parsed.OFFLOAD_TEMPERATURE,
+      forceTriggerThreshold: parsed.OFFLOAD_FORCE_TRIGGER_THRESHOLD,
       contextWindow: parsed.OFFLOAD_CONTEXT_WINDOW,
+      maxPairsPerBatch: parsed.OFFLOAD_MAX_PAIRS_PER_BATCH,
       l1Enabled: parsed.OFFLOAD_L1_ENABLED,
       l15Enabled: parsed.OFFLOAD_L15_ENABLED,
       l2Enabled: parsed.OFFLOAD_L2_ENABLED,
       offloadRetentionDays: parsed.OFFLOAD_RETENTION_DAYS,
+      logMaxSizeMb: parsed.OFFLOAD_LOG_MAX_SIZE_MB,
+      backendUrl: parsed.OFFLOAD_BACKEND_URL || undefined,
+      backendApiKey: parsed.OFFLOAD_BACKEND_API_KEY || undefined,
+      backendTimeoutMs: parsed.OFFLOAD_BACKEND_TIMEOUT_MS,
+      userId: parsed.OFFLOAD_USER_ID || undefined,
       mildOffloadRatio: parsed.OFFLOAD_MILD_RATIO,
       aggressiveCompressRatio: parsed.OFFLOAD_AGGRESSIVE_RATIO,
       emergencyCompressRatio: parsed.OFFLOAD_EMERGENCY_RATIO,

@@ -18,6 +18,9 @@ const env: AppEnv = {
   memory: {
     storeBackend: "sqlite",
     captureEnabled: true,
+    l0l1RetentionDays: 0,
+    allowAggressiveCleanup: false,
+    cleanTime: "03:00",
     extractionEnabled: true,
     extractionDedup: true,
     maxMemoriesPerSession: 20,
@@ -45,12 +48,20 @@ const env: AppEnv = {
   offload: {
     enabled: false,
     model: undefined,
+    mode: "local",
     temperature: 0.2,
+    forceTriggerThreshold: 4,
     contextWindow: 128_000,
+    maxPairsPerBatch: 20,
     l1Enabled: false,
     l15Enabled: false,
     l2Enabled: false,
     offloadRetentionDays: 0,
+    logMaxSizeMb: 50,
+    backendUrl: undefined,
+    backendApiKey: undefined,
+    backendTimeoutMs: 120_000,
+    userId: undefined,
     mildOffloadRatio: 0.85,
     aggressiveCompressRatio: 0.85,
     emergencyCompressRatio: 0.95,
@@ -82,6 +93,12 @@ describe("buildTdaiRawConfig", () => {
       apiKey: "sk-embed",
       model: "text-embedding-3-small",
       dimensions: 1536,
+    });
+    expect(raw.capture).toEqual({
+      enabled: true,
+      l0l1RetentionDays: 0,
+      allowAggressiveCleanup: false,
+      cleanTime: "03:00",
     });
   });
 
