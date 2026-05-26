@@ -68,16 +68,16 @@ describe("parseEnv", () => {
     expect(env.memory.bm25Language).toBe("en");
 
     // Offload defaults (no vars set)
-    expect(env.offload.enabled).toBe(false);
+    expect(env.offload.enabled).toBe(true);
     expect(env.offload.model).toBeUndefined();
     expect(env.offload.mode).toBe("local");
     expect(env.offload.temperature).toBe(0.2);
     expect(env.offload.forceTriggerThreshold).toBe(4);
     expect(env.offload.contextWindow).toBe(128_000);
     expect(env.offload.maxPairsPerBatch).toBe(20);
-    expect(env.offload.l1Enabled).toBe(false);
-    expect(env.offload.l15Enabled).toBe(false);
-    expect(env.offload.l2Enabled).toBe(false);
+    expect(env.offload.l1Enabled).toBe(true);
+    expect(env.offload.l15Enabled).toBe(true);
+    expect(env.offload.l2Enabled).toBe(true);
     expect(env.offload.offloadRetentionDays).toBe(0);
     expect(env.offload.logMaxSizeMb).toBe(50);
     expect(env.offload.backendUrl).toBeUndefined();

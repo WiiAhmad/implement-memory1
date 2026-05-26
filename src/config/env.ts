@@ -106,7 +106,7 @@ const EnvSchema = z.object({
   // ── Offload Module Config ───────────────────────────────────────────────
   OFFLOAD_ENABLED: z
     .enum(["true", "false", "1", "0"])
-    .default("false")
+    .default("true")
     .transform((v) => v === "true" || v === "1"),
   OFFLOAD_MODEL: z.string().optional(),
   OFFLOAD_MODE: z.enum(["local", "backend"]).default("local"),
@@ -116,15 +116,15 @@ const EnvSchema = z.object({
   OFFLOAD_MAX_PAIRS_PER_BATCH: z.coerce.number().int().positive().default(20),
   OFFLOAD_L1_ENABLED: z
     .enum(["true", "false", "1", "0"])
-    .default("false")
+    .default("true")
     .transform((v) => v === "true" || v === "1"),
   OFFLOAD_L15_ENABLED: z
     .enum(["true", "false", "1", "0"])
-    .default("false")
+    .default("true")
     .transform((v) => v === "true" || v === "1"),
   OFFLOAD_L2_ENABLED: z
     .enum(["true", "false", "1", "0"])
-    .default("false")
+    .default("true")
     .transform((v) => v === "true" || v === "1"),
   OFFLOAD_RETENTION_DAYS: z.coerce.number().int().min(0).default(0),
   OFFLOAD_LOG_MAX_SIZE_MB: z.coerce.number().int().min(0).default(50),

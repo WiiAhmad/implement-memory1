@@ -209,16 +209,16 @@ mmdMaxTokens        = contextWindow × OFFLOAD_MMD_MAX_TOKEN_RATIO  (default: 12
 
 | Variable | Default | Description |
 |---|---|---|
-| `OFFLOAD_ENABLED` | `false` | Master switch — disable completely when not needed |
+| `OFFLOAD_ENABLED` | `true` | Master switch — set to `false` to disable offload completely |
 | `OFFLOAD_MODEL` | _(same as MODEL)_ | Separate LLM model for offload tasks (L1/L1.5/L2). Falls back to the main `MODEL` when not set. |
 | `OFFLOAD_MODE` | `local` | Offload LLM execution mode (`local` or `backend`) |
 | `OFFLOAD_TEMPERATURE` | `0.2` | LLM temperature for offload tasks |
 | `OFFLOAD_FORCE_TRIGGER_THRESHOLD` | `4` | Force-trigger L1 summarization when pending tool pairs reaches this count |
 | `OFFLOAD_CONTEXT_WINDOW` | `128000` | Model context window size (tokens) |
 | `OFFLOAD_MAX_PAIRS_PER_BATCH` | `20` | Maximum tool pairs per offload batch |
-| `OFFLOAD_L1_ENABLED` | `false` | Enable L1 tool pair summarization (requires a model — defaults to main `MODEL`) |
-| `OFFLOAD_L15_ENABLED` | `false` | Enable L1.5 task boundary detection (requires a model) |
-| `OFFLOAD_L2_ENABLED` | `false` | Enable L2 Mermaid MMD generation (requires a model) |
+| `OFFLOAD_L1_ENABLED` | `true` | Enable L1 tool pair summarization (requires a model — defaults to main `MODEL`) |
+| `OFFLOAD_L15_ENABLED` | `true` | Enable L1.5 task boundary detection (requires a model) |
+| `OFFLOAD_L2_ENABLED` | `true` | Enable L2 Mermaid MMD generation (requires a model) |
 | `OFFLOAD_RETENTION_DAYS` | `0` | Auto-delete data older than N days (0 = disabled, minimum effective: 3) |
 | `OFFLOAD_LOG_MAX_SIZE_MB` | `50` | Max total offload debug log size before reclaim truncates logs |
 | `OFFLOAD_BACKEND_URL` | _(unset)_ | Optional backend offload service URL |
