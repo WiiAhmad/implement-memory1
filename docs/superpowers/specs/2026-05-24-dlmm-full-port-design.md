@@ -71,7 +71,7 @@ Secrets and infrastructure config come from env. Mutable runtime state goes unde
 Required configuration groups:
 
 - enablement: enabled, dry-run, log level;
-- wallet/RPC: wallet private key, RPC URL, Helius key;
+- wallet/RPC: wallet private key, Helius RPC URL, Helius API key;
 - risk: max positions, max deploy amount, gas reserve, min SOL to open, position size percent;
 - screening: TVL, volume, holder, market-cap, bin-step, launchpad, bundler, top-holder, token-age, and fee thresholds;
 - management: claim thresholds, OOR wait, OOR cooldowns, repeat-deploy cooldowns, stop loss, take profit, trailing take profit, rebalance thresholds;
@@ -79,6 +79,7 @@ Required configuration groups:
 - schedule: screening interval, management interval, health interval, briefing time;
 - LLM: provider/base URL/API key/model per role, temperature, max tokens, max steps;
 - integrations: HiveMind, LPAgent, Jupiter, Discord, Telegram operator destinations;
+  - LPAgent uses dlmm-native env names. `DLMM_LPAGENT_APIURL` intentionally maps the source `agentMeridianApiUrl` value and must remain `https://api.agentmeridian.xyz/api`; `DLMM_LPAGENT_RELAY_ENABLED` controls relay usage and defaults to `true`.
 - self-update: allow/deny flag, branch/ref policy, restart command.
 
 ## Full prompt requirements

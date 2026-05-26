@@ -52,12 +52,20 @@ function intConfig(overrides?: Partial<OffloadConfig>): OffloadConfig {
   return {
     enabled: true,
     model: undefined, // No LLM → degraded L1 fallback
+    mode: "local",
     temperature: 0.2,
+    forceTriggerThreshold: 4,
     contextWindow: 500,
+    maxPairsPerBatch: 20,
     l1Enabled: true,
     l15Enabled: false,
     l2Enabled: false,
     offloadRetentionDays: 0,
+    logMaxSizeMb: 50,
+    backendUrl: undefined,
+    backendApiKey: undefined,
+    backendTimeoutMs: 120_000,
+    userId: undefined,
     mildOffloadRatio: 0.85, // 425 tokens
     aggressiveCompressRatio: 0.5, // 250 tokens
     emergencyCompressRatio: 0.9, // 450 tokens

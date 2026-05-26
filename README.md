@@ -56,6 +56,9 @@ match the library's recommended settings for a conversational Telegram bot.
 |---|---|---|
 | `MEMORY_STORE_BACKEND` | `sqlite` | Storage backend (only sqlite supported) |
 | `MEMORY_CAPTURE_ENABLED` | `true` | Enable raw conversation recording |
+| `MEMORY_L0L1_RETENTION_DAYS` | `0` | Auto-delete L0/L1 memory data older than N days (0 = disabled, minimum effective: 3) |
+| `MEMORY_ALLOW_AGGRESSIVE_CLEANUP` | `false` | Allow local memory retention below 3 days |
+| `MEMORY_CLEAN_TIME` | `03:00` | Daily memory cleanup time in HH:mm |
 | `MEMORY_EXTRACTION_ENABLED` | `true` | Enable memory extraction pipeline |
 | `MEMORY_EXTRACTION_DEDUP` | `true` | Deduplicate extracted memories |
 | `MEMORY_MAX_MEMORIES` | `20` | Maximum extracted memories kept per session |
@@ -205,12 +208,20 @@ mmdMaxTokens        = contextWindow × OFFLOAD_MMD_MAX_TOKEN_RATIO  (default: 12
 |---|---|---|
 | `OFFLOAD_ENABLED` | `false` | Master switch — disable completely when not needed |
 | `OFFLOAD_MODEL` | _(same as MODEL)_ | Separate LLM model for offload tasks (L1/L1.5/L2). Falls back to the main `MODEL` when not set. |
+| `OFFLOAD_MODE` | `local` | Offload LLM execution mode (`local` or `backend`) |
 | `OFFLOAD_TEMPERATURE` | `0.2` | LLM temperature for offload tasks |
+| `OFFLOAD_FORCE_TRIGGER_THRESHOLD` | `4` | Force-trigger L1 summarization when pending tool pairs reaches this count |
 | `OFFLOAD_CONTEXT_WINDOW` | `128000` | Model context window size (tokens) |
+| `OFFLOAD_MAX_PAIRS_PER_BATCH` | `20` | Maximum tool pairs per offload batch |
 | `OFFLOAD_L1_ENABLED` | `false` | Enable L1 tool pair summarization (requires a model — defaults to main `MODEL`) |
 | `OFFLOAD_L15_ENABLED` | `false` | Enable L1.5 task boundary detection (requires a model) |
 | `OFFLOAD_L2_ENABLED` | `false` | Enable L2 Mermaid MMD generation (requires a model) |
 | `OFFLOAD_RETENTION_DAYS` | `0` | Auto-delete data older than N days (0 = disabled, minimum effective: 3) |
+| `OFFLOAD_LOG_MAX_SIZE_MB` | `50` | Max total offload debug log size before reclaim truncates logs |
+| `OFFLOAD_BACKEND_URL` | _(unset)_ | Optional backend offload service URL |
+| `OFFLOAD_BACKEND_API_KEY` | _(unset)_ | Optional backend offload service API key |
+| `OFFLOAD_BACKEND_TIMEOUT_MS` | `120000` | Backend offload service timeout |
+| `OFFLOAD_USER_ID` | _(unset)_ | Optional backend offload persistence user id |
 
 #### Compression Thresholds
 

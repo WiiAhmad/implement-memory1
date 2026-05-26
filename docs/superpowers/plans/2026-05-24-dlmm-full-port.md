@@ -69,7 +69,9 @@ describe("parseDlmmEnv", () => {
     expect(env.enabled).toBe(false);
     expect(env.dryRun).toBe(true);
     expect(env.walletPrivateKey).toBeUndefined();
-    expect(env.rpcUrl).toBeUndefined();
+    expect(env.heliusRpcUrl).toBeUndefined();
+    expect(env.lpAgentApiUrl).toBe("https://api.agentmeridian.xyz/api");
+    expect(env.lpAgentRelayEnabled).toBe(true);
     expect(env.risk.maxPositions).toBe(3);
     expect(env.risk.maxDeployAmountSol).toBe(50);
     expect(env.risk.gasReserveSol).toBe(0.2);
@@ -98,8 +100,10 @@ describe("parseDlmmEnv", () => {
       DLMM_ENABLED: "true",
       DLMM_DRY_RUN: "false",
       DLMM_WALLET_PRIVATE_KEY: "wallet-secret",
-      DLMM_RPC_URL: "https://rpc.example.com",
+      DLMM_HELIUS_RPC_URL: "https://rpc.example.com",
       DLMM_HELIUS_API_KEY: "helius-key",
+      DLMM_LPAGENT_APIURL: "https://api.agentmeridian.xyz/api",
+      DLMM_LPAGENT_RELAY_ENABLED: "true",
       DLMM_MAX_POSITIONS: "5",
       DLMM_MAX_DEPLOY_AMOUNT_SOL: "2.5",
       DLMM_GAS_RESERVE_SOL: "0.3",
@@ -136,8 +140,10 @@ describe("parseDlmmEnv", () => {
     expect(env.enabled).toBe(true);
     expect(env.dryRun).toBe(false);
     expect(env.walletPrivateKey).toBe("wallet-secret");
-    expect(env.rpcUrl).toBe("https://rpc.example.com");
+    expect(env.heliusRpcUrl).toBe("https://rpc.example.com");
     expect(env.heliusApiKey).toBe("helius-key");
+    expect(env.lpAgentApiUrl).toBe("https://api.agentmeridian.xyz/api");
+    expect(env.lpAgentRelayEnabled).toBe(true);
     expect(env.risk.maxPositions).toBe(5);
     expect(env.risk.maxDeployAmountSol).toBe(2.5);
     expect(env.risk.gasReserveSol).toBe(0.3);
@@ -192,9 +198,11 @@ export interface DlmmConfig {
   enabled: boolean;
   dryRun: boolean;
   walletPrivateKey?: string;
-  rpcUrl?: string;
+  heliusRpcUrl?: string;
   heliusApiKey?: string;
   lpAgentApiKey?: string;
+  lpAgentApiUrl: string;
+  lpAgentRelayEnabled: boolean;
   risk: DlmmRiskConfig;
   screening: DlmmScreeningConfig;
   management: DlmmManagementConfig;
@@ -342,9 +350,12 @@ Replace repeated boolean schema definitions only when convenient, but do not ref
   DLMM_ENABLED: boolString.default("false"),
   DLMM_DRY_RUN: boolString.default("true"),
   DLMM_WALLET_PRIVATE_KEY: z.string().optional(),
-  DLMM_RPC_URL: z.string().url().optional(),
+  DLMM_HELIUS_RPC_URL: z.string().url().optional(),
   DLMM_HELIUS_API_KEY: z.string().optional(),
   DLMM_LPAGENT_API_KEY: z.string().optional(),
+  // Maps source agentMeridianApiUrl; keep this fixed unless the LPAgent API host changes.
+  DLMM_LPAGENT_APIURL: z.string().url().default("https://api.agentmeridian.xyz/api"),
+  DLMM_LPAGENT_RELAY_ENABLED: boolString.default("true"),
 
   DLMM_MAX_POSITIONS: z.coerce.number().int().positive().default(3),
   DLMM_MAX_DEPLOY_AMOUNT_SOL: z.coerce.number().positive().default(50),
@@ -440,9 +451,11 @@ Add this object to the return value of `parseEnv()`:
       enabled: parsed.DLMM_ENABLED,
       dryRun: parsed.DLMM_DRY_RUN,
       walletPrivateKey: parsed.DLMM_WALLET_PRIVATE_KEY,
-      rpcUrl: parsed.DLMM_RPC_URL,
+      heliusRpcUrl: parsed.DLMM_HELIUS_RPC_URL,
       heliusApiKey: parsed.DLMM_HELIUS_API_KEY,
       lpAgentApiKey: parsed.DLMM_LPAGENT_API_KEY,
+      lpAgentApiUrl: parsed.DLMM_LPAGENT_APIURL,
+      lpAgentRelayEnabled: parsed.DLMM_LPAGENT_RELAY_ENABLED,
       risk: {
         maxPositions: parsed.DLMM_MAX_POSITIONS,
         maxDeployAmountSol: parsed.DLMM_MAX_DEPLOY_AMOUNT_SOL,
@@ -555,9 +568,12 @@ Append this section to `.env.example`:
 DLMM_ENABLED=false
 DLMM_DRY_RUN=true
 DLMM_WALLET_PRIVATE_KEY=
-DLMM_RPC_URL=
+DLMM_HELIUS_RPC_URL=
 DLMM_HELIUS_API_KEY=
 DLMM_LPAGENT_API_KEY=
+# Maps source agentMeridianApiUrl; keep this exact value for LPAgent relay/API calls.
+DLMM_LPAGENT_APIURL=https://api.agentmeridian.xyz/api
+DLMM_LPAGENT_RELAY_ENABLED=true
 DLMM_MAX_POSITIONS=3
 DLMM_MAX_DEPLOY_AMOUNT_SOL=50
 DLMM_GAS_RESERVE_SOL=0.2

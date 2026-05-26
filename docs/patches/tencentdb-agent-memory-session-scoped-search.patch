@@ -1,0 +1,248 @@
+diff --git a/src/core/store/sqlite.ts b/src/core/store/sqlite.ts
+index b71a05b..3ab2349 100644
+--- a/src/core/store/sqlite.ts
++++ b/src/core/store/sqlite.ts
+@@ -398,6 +398,7 @@ export class VectorStore implements IMemoryStore {
+   private stmtL1FtsInsert!: SqliteStatementAdapter;
+   private stmtL1FtsDelete!: SqliteStatementAdapter;
+   private stmtL1FtsSearch!: SqliteStatementAdapter;
++  private stmtL1FtsSearchBySession!: SqliteStatementAdapter;
+ 
+   // Prepared statements — FTS5 L0 (initialized in init())
+   private stmtL0FtsInsert!: SqliteStatementAdapter;
+@@ -807,6 +808,18 @@ export class VectorStore implements IMemoryStore {
+         LIMIT ?
+       `);
+ 
++      this.stmtL1FtsSearchBySession = this.db.prepare(`
++        SELECT record_id, content_original AS content, type, priority, scene_name,
++               session_key, session_id, timestamp_str, timestamp_start, timestamp_end,
++               metadata_json,
++               bm25(l1_fts) AS rank
++        FROM l1_fts
++        WHERE l1_fts MATCH ?
++          AND session_key = ?
++        ORDER BY rank ASC
++        LIMIT ?
++      `);
++
+       // L0 FTS prepared statements
+       this.stmtL0FtsInsert = this.db.prepare(`
+         INSERT INTO l0_fts (message_text, message_text_original, record_id, session_key, session_id, role, recorded_at, timestamp)
+@@ -1106,7 +1119,7 @@ export class VectorStore implements IMemoryStore {
+    * **Fault-tolerant**: returns an empty array on any error (e.g. dimension
+    * mismatch, corrupted DB) so callers can fall back to keyword search.
+    */
+-  searchL1Vector(queryEmbedding: Float32Array, topK = 5): VectorSearchResult[] {
++  searchL1Vector(queryEmbedding: Float32Array, topK = 5, _queryText?: string, sessionKey?: string): VectorSearchResult[] {
+     if (this.degraded || !this.vecTablesReady) {
+       if (this.degraded) this.logger?.warn(`${TAG} [L1-search] SKIPPED (degraded mode)`);
+       return [];
+@@ -1120,10 +1133,13 @@ export class VectorStore implements IMemoryStore {
+       // NOTE: "AND distance IS NOT NULL" is NOT usable because vec0 does not
+       // support that constraint — it causes an empty result set.
+       const ZERO_VEC_BUFFER = 10;
+-      const retrieveCount = topK + ZERO_VEC_BUFFER;
++      const retrieveCount = sessionKey
++        ? Math.max(this.countL1(), topK) + ZERO_VEC_BUFFER
++        : topK + ZERO_VEC_BUFFER;
+ 
+       this.logger?.debug?.(
+         `${TAG} [L1-search] START topK=${topK}, retrieveCount=${retrieveCount}, ` +
++        `sessionKey=${sessionKey ?? "(all)"}, ` +
+         `queryEmbeddingDims=${queryEmbedding.length}, ` +
+         `queryNorm=${Math.sqrt(Array.from(queryEmbedding).reduce((s, v) => s + v * v, 0)).toFixed(4)}`,
+       );
+@@ -1168,6 +1184,9 @@ export class VectorStore implements IMemoryStore {
+           this.logger?.warn(`${TAG} [L1-search] record_id=${record_id} has vector but NO metadata (orphan)`);
+           continue;
+         }
++        if (sessionKey && meta.session_key !== sessionKey) {
++          continue;
++        }
+ 
+         const score = 1.0 - distance;
+         this.logger?.debug?.(
+@@ -2023,10 +2042,12 @@ export class VectorStore implements IMemoryStore {
+    *
+    * **Fault-tolerant**: returns an empty array on any error.
+    */
+-  searchL1Fts(ftsQuery: string, limit = 20): FtsSearchResult[] {
++  searchL1Fts(ftsQuery: string, limit = 20, sessionKey?: string): FtsSearchResult[] {
+     if (this.degraded || !this.ftsAvailable) return [];
+     try {
+-      const rows = this.stmtL1FtsSearch.all(ftsQuery, limit) as Array<{
++      const rows = (sessionKey
++        ? this.stmtL1FtsSearchBySession.all(ftsQuery, sessionKey, limit)
++        : this.stmtL1FtsSearch.all(ftsQuery, limit)) as Array<{
+         record_id: string;
+         content: string;
+         type: string;
+diff --git a/src/core/store/tcvdb.ts b/src/core/store/tcvdb.ts
+index 4761727..a2489ac 100644
+--- a/src/core/store/tcvdb.ts
++++ b/src/core/store/tcvdb.ts
+@@ -615,23 +615,24 @@ export class TcvdbMemoryStore implements IMemoryStore {
+ 
+   // ── L1 Search Operations ─────────────────────────────────
+ 
+-  async searchL1Vector(_queryEmbedding: Float32Array, topK?: number, queryText?: string): Promise<L1SearchResult[]> {
++  async searchL1Vector(_queryEmbedding: Float32Array, topK?: number, queryText?: string, sessionKey?: string): Promise<L1SearchResult[]> {
+     // TCVDB uses server-side embedding — delegate to hybrid search with text
+     if (queryText) {
+-      return this.searchL1HybridAsync({ queryText, topK });
++      const results = await this.searchL1HybridAsync({ queryText, topK });
++      return sessionKey ? results.filter((r) => r.session_key === sessionKey) : results;
+     }
+     // No queryText and TCVDB can't use client embeddings directly via embeddingItems
+     // Return empty — callers should pass queryText for TCVDB
+     return [];
+   }
+ 
+-  async searchL1Fts(ftsQuery: string, limit?: number): Promise<L1FtsResult[]> {
++  async searchL1Fts(ftsQuery: string, limit?: number, sessionKey?: string): Promise<L1FtsResult[]> {
+     // TCVDB has no pure FTS — use hybrid search with sparse-only path
+     // The ftsQuery is raw text, use it as queryText for hybrid
+     if (!ftsQuery) return [];
+     const results = await this.searchL1HybridAsync({ queryText: ftsQuery, topK: limit });
+     // L1SearchResult and L1FtsResult have identical shapes
+-    return results;
++    return sessionKey ? results.filter((r) => r.session_key === sessionKey) : results;
+   }
+ 
+   async searchL1Hybrid(params: {
+diff --git a/src/core/store/types.ts b/src/core/store/types.ts
+index cfcb50a..369d17c 100644
+--- a/src/core/store/types.ts
++++ b/src/core/store/types.ts
+@@ -270,8 +270,8 @@ export interface IMemoryStore {
+ 
+   // ── L1 Search ────────────────────────────────────────────
+ 
+-  searchL1Vector(queryEmbedding: Float32Array, topK?: number, queryText?: string): MaybePromise<L1SearchResult[]>;
+-  searchL1Fts(ftsQuery: string, limit?: number): MaybePromise<L1FtsResult[]>;
++  searchL1Vector(queryEmbedding: Float32Array, topK?: number, queryText?: string, sessionKey?: string): MaybePromise<L1SearchResult[]>;
++  searchL1Fts(ftsQuery: string, limit?: number, sessionKey?: string): MaybePromise<L1FtsResult[]>;
+   searchL1Hybrid?(params: {
+     query?: string;
+     queryEmbedding?: Float32Array;
+diff --git a/src/core/tdai-core.ts b/src/core/tdai-core.ts
+index 977d4a2..4b505c4 100644
+--- a/src/core/tdai-core.ts
++++ b/src/core/tdai-core.ts
+@@ -293,6 +293,7 @@ export class TdaiCore {
+       limit: params.limit ?? 5,
+       type: params.type,
+       scene: params.scene,
++      sessionKey: params.sessionKey,
+       vectorStore: this.vectorStore,
+       embeddingService: this.embeddingService,
+       logger: this.logger,
+diff --git a/src/core/tools/memory-search.ts b/src/core/tools/memory-search.ts
+index dc9d2c2..568e888 100644
+--- a/src/core/tools/memory-search.ts
++++ b/src/core/tools/memory-search.ts
+@@ -31,6 +31,7 @@ export interface MemorySearchResultItem {
+   type: string;
+   priority: number;
+   scene_name: string;
++  session_key: string;
+   score: number;
+   created_at: string;
+   updated_at: string;
+@@ -90,6 +91,7 @@ export async function executeMemorySearch(params: {
+   limit: number;
+   type?: string;
+   scene?: string;
++  sessionKey?: string;
+   vectorStore?: IMemoryStore;
+   embeddingService?: EmbeddingService;
+   logger?: Logger;
+@@ -99,6 +101,7 @@ export async function executeMemorySearch(params: {
+     limit,
+     type: typeFilter,
+     scene: sceneFilter,
++    sessionKey: sessionFilter,
+     vectorStore,
+     embeddingService,
+     logger,
+@@ -107,6 +110,7 @@ export async function executeMemorySearch(params: {
+   logger?.debug?.(
+     `${TAG} CALLED: query="${query.slice(0, 100)}", limit=${limit}, ` +
+     `typeFilter=${typeFilter ?? "(none)"}, sceneFilter=${sceneFilter ?? "(none)"}, ` +
++    `sessionFilter=${sessionFilter ?? "(none)"}, ` +
+     `vectorStore=${vectorStore ? "available" : "UNAVAILABLE"}, ` +
+     `embeddingService=${embeddingService ? "available" : "UNAVAILABLE"}`,
+   );
+@@ -139,7 +143,7 @@ export async function executeMemorySearch(params: {
+   }
+ 
+   // ── Over-retrieve for later filtering and RRF merging ──
+-  const candidateK = limit * 3;
++  const candidateK = sessionFilter ? limit * 6 : limit * 3;
+ 
+   // ── Run available search strategies in parallel ──
+   const [ftsItems, vecItems] = await Promise.all([
+@@ -153,7 +157,7 @@ export async function executeMemorySearch(params: {
+           return [];
+         }
+         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 query: "${ftsQuery}"`);
+-        const ftsResults = await vectorStore.searchL1Fts(ftsQuery, candidateK);
++        const ftsResults = await vectorStore.searchL1Fts(ftsQuery, candidateK, sessionFilter);
+         logger?.debug?.(`${TAG} [hybrid-fts] FTS5 returned ${ftsResults.length} candidates`);
+         return ftsResults.map((r) => ({
+           id: r.record_id,
+@@ -161,6 +165,7 @@ export async function executeMemorySearch(params: {
+           type: r.type,
+           priority: r.priority,
+           scene_name: r.scene_name,
++          session_key: r.session_key,
+           score: r.score,
+           created_at: r.timestamp_start,
+           updated_at: r.timestamp_end,
+@@ -182,7 +187,12 @@ export async function executeMemorySearch(params: {
+         logger?.debug?.(
+           `${TAG} [hybrid-vec] Embedding OK, dims=${queryEmbedding.length}, searching top-${candidateK}...`,
+         );
+-        const vecResults: L1SearchResult[] = await vectorStore.searchL1Vector(queryEmbedding, candidateK, query);
++        const vecResults: L1SearchResult[] = await vectorStore.searchL1Vector(
++          queryEmbedding,
++          candidateK,
++          query,
++          sessionFilter,
++        );
+         logger?.debug?.(`${TAG} [hybrid-vec] Vector search returned ${vecResults.length} candidates`);
+         return vecResults.map((r) => ({
+           id: r.record_id,
+@@ -190,6 +200,7 @@ export async function executeMemorySearch(params: {
+           type: r.type,
+           priority: r.priority,
+           scene_name: r.scene_name,
++          session_key: r.session_key,
+           score: r.score,
+           created_at: r.timestamp_start,
+           updated_at: r.timestamp_end,
+@@ -244,6 +255,11 @@ export async function executeMemorySearch(params: {
+     );
+     logger?.debug?.(`${TAG} After scene filter "${sceneFilter}": ${results.length}/${preFilterCount}`);
+   }
++  if (sessionFilter) {
++    const beforeSessionFilter = results.length;
++    results = results.filter((r) => r.session_key === sessionFilter);
++    logger?.debug?.(`${TAG} After session filter "${sessionFilter}": ${results.length}/${beforeSessionFilter}`);
++  }
+ 
+   // ── Trim to requested limit ──
+   const trimmed = results.slice(0, limit);
+diff --git a/src/core/types.ts b/src/core/types.ts
+index 8585b50..157afc3 100644
+--- a/src/core/types.ts
++++ b/src/core/types.ts
+@@ -231,6 +231,7 @@ export interface MemorySearchParams {
+   limit?: number;
+   type?: string;
+   scene?: string;
++  sessionKey?: string;
+ }
+ 
+ /** Search parameters for L0 conversation search. */

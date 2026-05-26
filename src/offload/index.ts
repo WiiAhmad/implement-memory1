@@ -421,7 +421,7 @@ export class OffloadService {
    * Called during the tool loop to buffer a tool call + result pair.
    *
    * Buffers the pair and triggers an inline L1 flush when the pending
-   * count reaches L1_INLINE_THRESHOLD (4). This keeps the pending buffer
+   * count reaches forceTriggerThreshold. This keeps the pending buffer
    * small during long tool-using responses.
    */
   async onToolCall(params: OnToolCallParams): Promise<void> {
@@ -452,9 +452,10 @@ export class OffloadService {
     );
 
     // ── Inline L1 flush: summarise buffered pairs early when threshold reached ──
-    if (this.config.l1Enabled && this.llmClient && pending >= L1_INLINE_THRESHOLD) {
+    const inlineThreshold = this.config.forceTriggerThreshold;
+    if (this.config.l1Enabled && this.llmClient && pending >= inlineThreshold) {
       this.logger.info(
-        `[offload] onToolCall: inline L1 flush triggered (pending=${pending} >= ${L1_INLINE_THRESHOLD})`,
+        `[offload] onToolCall: inline L1 flush triggered (pending=${pending} >= ${inlineThreshold})`,
       );
       await this.flushL1(manager);
     }
@@ -973,7 +974,7 @@ export class OffloadService {
         const dataRoot = this.getDataDir();
         const reclaimConfig: ReclaimConfig = {
           retentionDays: this.retentionDays,
-          logMaxSizeMb: 50,
+          logMaxSizeMb: this.config.logMaxSizeMb,
         };
 
         this.logger.info(
@@ -1099,8 +1100,9 @@ export class OffloadService {
 
       // Split entries into batches to avoid oversized requests
       const batches: any[][] = [];
-      for (let i = 0; i < mmdEntries.length; i += L2_BATCH_SIZE) {
-        batches.push(mmdEntries.slice(i, i + L2_BATCH_SIZE));
+      const batchSize = this.config.maxPairsPerBatch;
+      for (let i = 0; i < mmdEntries.length; i += batchSize) {
+        batches.push(mmdEntries.slice(i, i + batchSize));
       }
       this.logger.info(
         `[offload] L2 pipeline: mmd=${mmdFile}, ${mmdEntries.length} entries → ${batches.length} batch(es)`,
@@ -1216,6 +1218,8 @@ export class OffloadService {
     return {
       model: this.config.model,
       temperature: this.config.temperature,
+      forceTriggerThreshold: this.config.forceTriggerThreshold,
+      maxPairsPerBatch: this.config.maxPairsPerBatch,
       l2NullThreshold: this.config.l2NullThreshold,
       l2TimeoutSeconds: this.config.l2TimeoutSeconds,
       mildOffloadRatio: this.config.mildOffloadRatio,
@@ -1237,17 +1241,6 @@ const L15_MIN_CHARS_FOR_JUDGE = 20;
 
 /** Delay before L1.5 retry (ms). */
 const L15_RETRY_DELAY_MS = 3000;
-
-/** Max entries per L2 batch. */
-const L2_BATCH_SIZE = 30;
-
-/**
- * Inline L1 flush threshold.
- * When pending tool pairs reach this count in onToolCall(), they are
- * flushed to L1 summaries immediately instead of waiting for afterTurn().
- * Mirrors the library's after-tool-call hook force-trigger default (4).
- */
-const L1_INLINE_THRESHOLD = 4;
 
 /** Data retention reclaim interval in ms (24 hours). */
 const RECLAIM_INTERVAL_MS = 24 * 60 * 60 * 1000;
