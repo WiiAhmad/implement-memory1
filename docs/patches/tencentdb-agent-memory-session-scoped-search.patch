@@ -42,7 +42,7 @@ index 1891228..d7831c2 100644
      "json5": "^2.2.3",
      "sqlite-vec": "0.1.7-alpha.2",
 diff --git a/src/adapters/standalone/llm-runner.ts b/src/adapters/standalone/llm-runner.ts
-index 13bf620..020a292 100644
+index 13bf620..f70b543 100644
 --- a/src/adapters/standalone/llm-runner.ts
 +++ b/src/adapters/standalone/llm-runner.ts
 @@ -1,5 +1,5 @@
@@ -193,7 +193,12 @@ index 13bf620..020a292 100644
 +            },
 +            required: ["path", "content"],
 +          },
-+        },
+         },
+-        required: ["path"],
+-      }),
+-      execute: (async (args: { path: string }) => {
+-        const resolved = resolveSandboxedPath(workspaceDir, args.path);
+-        if (!resolved) return JSON.stringify({ error: `Path "${args.path}" escapes workspace boundary.` });
 +      },
 +      {
 +        type: "function" as const,
@@ -209,12 +214,7 @@ index 13bf620..020a292 100644
 +            },
 +            required: ["path", "old_str", "new_str"],
 +          },
-         },
--        required: ["path"],
--      }),
--      execute: (async (args: { path: string }) => {
--        const resolved = resolveSandboxedPath(workspaceDir, args.path);
--        if (!resolved) return JSON.stringify({ error: `Path "${args.path}" escapes workspace boundary.` });
++        },
 +      },
 +    ],
 +    executors: {
@@ -310,7 +310,7 @@ index 13bf620..020a292 100644
    };
  }
  
-@@ -182,64 +277,137 @@ export class StandaloneLLMRunner implements LLMRunner {
+@@ -182,64 +277,143 @@ export class StandaloneLLMRunner implements LLMRunner {
        `tools=${this.enableTools}, timeout=${timeoutMs}ms`,
      );
  
@@ -368,8 +368,17 @@ index 13bf620..020a292 100644
 +        );
 +
 +        const choice = response.choices?.[0];
-+        if (!choice?.message) throw new Error("No response from LLM");
-+
++        if (!choice?.message) {
++          throw new Error(
++            `No response from LLM ` +
++            `(taskId=${params.taskId}, model=${this.model}, step=${step}, ` +
++            `finishReason=${choice?.finish_reason ?? "unknown"})`,
++          );
++        }
+ 
+-      this.logger?.debug?.(
+-        `${TAG} run() completed: ${totalMs}ms, steps=${result.steps.length}, output=${text.length} chars`,
+-      );
 +        const message = choice.message;
 +
 +        // Push assistant message to conversation
@@ -405,10 +414,7 @@ index 13bf620..020a292 100644
 +          }
 +          continue;
 +        }
- 
--      this.logger?.debug?.(
--        `${TAG} run() completed: ${totalMs}ms, steps=${result.steps.length}, output=${text.length} chars`,
--      );
++
 +        // No tool calls — return text content
 +        const text = message.content?.trim() ?? "";
 +        const totalMs = Date.now() - runStartMs;
@@ -862,6 +868,22 @@ index 84f7d47..4c1d1c4 100644
 +  const recencyFactor = Math.max(0, 1 - daysSinceUpdate / 30);
 +  return Number(((heatFactor * 0.4 + memoryFactor * 0.3 + recencyFactor * 0.3) * 10).toFixed(1));
 +}
+diff --git a/src/core/store/embedding.ts b/src/core/store/embedding.ts
+index c2fe9f8..61824a2 100644
+--- a/src/core/store/embedding.ts
++++ b/src/core/store/embedding.ts
+@@ -549,7 +549,10 @@ export class OpenAIEmbeddingService implements EmbeddingService {
+           const json = (await resp.json()) as OpenAIEmbeddingResponse;
+ 
+           if (!json.data || !Array.isArray(json.data)) {
+-            throw new Error("Embedding API returned unexpected format: missing 'data' array");
++            throw new Error(
++              `Embedding API returned unexpected format: missing 'data' array ` +
++              `(model=${this.model}, provider=${this.providerName}, texts=${texts.length})`,
++            );
+           }
+ 
+           // Sort by index to ensure correct order, then sanitize+normalize for consistency with local provider
 diff --git a/src/core/store/sqlite.ts b/src/core/store/sqlite.ts
 index b71a05b..3ab2349 100644
 --- a/src/core/store/sqlite.ts
@@ -1110,6 +1132,21 @@ index 8585b50..157afc3 100644
  }
  
  /** Search parameters for L0 conversation search. */
+diff --git a/src/offload/local-llm/index.ts b/src/offload/local-llm/index.ts
+index 78b4782..5a46964 100644
+--- a/src/offload/local-llm/index.ts
++++ b/src/offload/local-llm/index.ts
+@@ -142,8 +142,8 @@ export class LocalLlmClient {
+ 
+     const result = parseL2Response(raw);
+     if (!result) {
+-      this.logger?.error?.(`${TAG} L2: failed to parse response (${raw.length} chars)`);
+-      throw new Error("L2 response parsing failed");
++      this.logger?.error?.(`${TAG} L2: failed to parse response (${raw.length} chars, taskLabel=${req.taskLabel})`);
++      throw new Error(`L2 response parsing failed (rawLen=${raw.length}, taskLabel=${req.taskLabel})`);
+     }
+ 
+     return {
 diff --git a/src/offload/local-llm/llm-caller.ts b/src/offload/local-llm/llm-caller.ts
 index 95ae691..0fd3572 100644
 --- a/src/offload/local-llm/llm-caller.ts
@@ -1276,23 +1313,30 @@ index 95ae691..0fd3572 100644
      throw err;
    }
 diff --git a/src/utils/pipeline-factory.ts b/src/utils/pipeline-factory.ts
-index 4595753..6100d1e 100644
+index 4595753..cc41e63 100644
 --- a/src/utils/pipeline-factory.ts
 +++ b/src/utils/pipeline-factory.ts
-@@ -374,6 +374,12 @@ export function createL1Runner(opts: {
+@@ -374,6 +374,19 @@ export function createL1Runner(opts: {
            instanceId: getInstanceId?.(),
          });
  
 +        if (!l1Result.success) {
 +          throw new Error(
-+            `L1 extraction failed for session=${sessionKey}, sessionId=${group.sessionId || "(empty)"}`,
++            `L1 extraction failed for ` +
++            `session=${sessionKey}, ` +
++            `sessionId=${group.sessionId || "(empty)"}, ` +
++            `messages=${group.messages.length}, ` +
++            `extractedCount=${l1Result.extractedCount}, ` +
++            `storedCount=${l1Result.storedCount}, ` +
++            `model=${cfg.extraction.model || "(default)"}, ` +
++            `previousSceneName=${JSON.stringify(lastSceneName ?? runnerState.last_scene_name) ?? "(none)"}`,
 +          );
 +        }
 +
          totalExtracted += l1Result.extractedCount;
          totalStored += l1Result.storedCount;
          if (l1Result.lastSceneName) {
-@@ -514,6 +520,7 @@ export function createL2Runner(opts: {
+@@ -514,6 +527,7 @@ export function createL2Runner(opts: {
        model: cfg.persona.model,
        maxScenes: cfg.persona.maxScenes,
        sceneBackupCount: cfg.persona.sceneBackupCount,
