@@ -23,6 +23,7 @@ const EnvSchema = z.object({
   BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   MODEL: z.string().min(1),
   CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+  CHAT_TIMEOUT_RETRIES: z.coerce.number().int().min(0).default(3),
   EMBEDDING_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   EMBEDDING_API_KEY: z.string().min(1),
   EMBEDDING_MODEL: z.string().min(1),
@@ -155,6 +156,7 @@ export interface AppEnv {
   baseUrl: string;
   model: string;
   chatTimeoutMs: number;
+  chatTimeoutRetries: number;
   embedding: {
     baseUrl: string;
     apiKey: string;
@@ -239,6 +241,7 @@ export function parseEnv(input: Record<string, string | undefined>): AppEnv {
     baseUrl: parsed.BASE_URL,
     model: parsed.MODEL,
     chatTimeoutMs: parsed.CHAT_TIMEOUT_MS,
+    chatTimeoutRetries: parsed.CHAT_TIMEOUT_RETRIES,
     embedding: {
       baseUrl: parsed.EMBEDDING_BASE_URL,
       apiKey: parsed.EMBEDDING_API_KEY,

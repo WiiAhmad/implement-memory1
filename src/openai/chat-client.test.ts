@@ -43,13 +43,14 @@ mock.module("openai", () => ({
 
 // ── Helpers ──
 
-function createClient(timeoutMs?: number): OpenAiChatClient {
+function createClient(timeoutMs?: number, timeoutRetries?: number): OpenAiChatClient {
   return new OpenAiChatClient(
     {
       baseUrl: "https://api.openai.com/v1",
       apiKey: "test-key",
       model: "gpt-4o-mini",
       timeoutMs,
+      timeoutRetries,
     },
     // noop logger
     { info() {}, warn() {}, error() {} },
@@ -164,6 +165,81 @@ describe("OpenAiChatClient", () => {
   test("passes timeout from config", () => {
     const client = createClient(45_000);
     expect(client).toBeDefined();
+  });
+
+  test("retries timeout abort failures before returning a reply", async () => {
+    let calls = 0;
+    const warnings: string[] = [];
+    mock.module("openai", () => ({
+      default: class OpenAI {
+        chat = {
+          completions: {
+            create: async () => {
+              calls++;
+              if (calls <= 2) throw new Error("Request was aborted.");
+              return {
+                id: "test-cmpl-id",
+                object: "chat.completion",
+                created: Math.floor(Date.now() / 1000),
+                model: "gpt-4o-mini",
+                choices: [
+                  {
+                    index: 0,
+                    message: { role: "assistant", content: "Recovered." },
+                    finish_reason: "stop",
+                    logprobs: null,
+                  },
+                ],
+              };
+            },
+          },
+        };
+        constructor(_config: Record<string, unknown>) {}
+      },
+    }));
+
+    const client = new OpenAiChatClient(
+      {
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "test-key",
+        model: "gpt-4o-mini",
+        timeoutMs: 1,
+        timeoutRetries: 3,
+      },
+      { info() {}, warn(message) { warnings.push(message); }, error() {} },
+    );
+
+    const reply = await client.reply({ userPrompt: "test" });
+
+    expect(reply).toBe("Recovered.");
+    expect(calls).toBe(3);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("timeout retry 1/3");
+    expect(warnings[1]).toContain("timeout retry 2/3");
+  });
+
+  test("does not retry non-timeout errors", async () => {
+    let calls = 0;
+    mock.module("openai", () => ({
+      default: class OpenAI {
+        chat = {
+          completions: {
+            create: async () => {
+              calls++;
+              throw new Error("Invalid API key");
+            },
+          },
+        };
+        constructor(_config: Record<string, unknown>) {}
+      },
+    }));
+
+    const client = createClient(1, 3);
+
+    await expect(
+      client.reply({ userPrompt: "test" }),
+    ).rejects.toThrow("Invalid API key");
+    expect(calls).toBe(1);
   });
 
   test("handles empty text response", async () => {

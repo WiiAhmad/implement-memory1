@@ -13,6 +13,9 @@ Running `bun install` at the repo root also installs dependencies in `TencentDB-
 
 Set all OpenAI and Telegram values in `.env` before starting the bot.
 
+Chat replies automatically retry timeout/abort failures up to 3 times by default.
+Tune this with `CHAT_TIMEOUT_RETRIES`; set it to `0` to disable timeout retries.
+
 ## Run
 
 ```bash

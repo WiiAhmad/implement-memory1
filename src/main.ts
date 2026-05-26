@@ -86,6 +86,7 @@ export async function start(): Promise<void> {
     apiKey: env.openAIApiKey,
     model: env.model,
     timeoutMs: env.chatTimeoutMs,
+    timeoutRetries: env.chatTimeoutRetries,
   }, logger);
 
   // ─── Step 2j: Wire memory search tools for the LLM ─────────────────────

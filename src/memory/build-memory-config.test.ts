@@ -9,6 +9,8 @@ const env: AppEnv = {
   openAIApiKey: "sk-chat",
   baseUrl: "https://api.openai.com/v1",
   model: "gpt-4o-mini",
+  chatTimeoutMs: 30_000,
+  chatTimeoutRetries: 3,
   embedding: {
     baseUrl: "https://api.openai.com/v1",
     apiKey: "sk-embed",

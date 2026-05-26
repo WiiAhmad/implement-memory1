@@ -1,3 +1,136 @@
+diff --git a/src/adapters/standalone/llm-runner.ts b/src/adapters/standalone/llm-runner.ts
+index 13bf620..6cc48fd 100644
+--- a/src/adapters/standalone/llm-runner.ts
++++ b/src/adapters/standalone/llm-runner.ts
+@@ -63,6 +63,75 @@ function resolveSandboxedPath(workspaceDir: string, relativePath: string): strin
+   return resolved;
+ }
+ 
++function formatLlmError(err: unknown): string {
++  const message = err instanceof Error ? err.message : String(err);
++  if (!err || typeof err !== "object") return message;
++
++  const details: string[] = [];
++  const record = err as Record<string, unknown>;
++  if (typeof record.statusCode === "number") details.push(`status=${record.statusCode}`);
++  if (typeof record.responseBody === "string" && record.responseBody.length > 0) {
++    const body = record.responseBody.replace(/\s+/g, " ").slice(0, 500);
++    details.push(`body=${JSON.stringify(body)}${record.responseBody.length > 500 ? `...(+${record.responseBody.length - 500})` : ""}`);
++  }
++
++  const cause = record.cause;
++  if (cause && typeof cause === "object") {
++    const causeRecord = cause as Record<string, unknown>;
++    const causeMessage = cause instanceof Error ? cause.message : undefined;
++    if (causeMessage && causeMessage !== message) details.push(`cause=${JSON.stringify(causeMessage)}`);
++    if (typeof causeRecord.statusCode === "number") details.push(`causeStatus=${causeRecord.statusCode}`);
++    if (typeof causeRecord.responseBody === "string" && causeRecord.responseBody.length > 0) {
++      const body = causeRecord.responseBody.replace(/\s+/g, " ").slice(0, 500);
++      details.push(`causeBody=${JSON.stringify(body)}${causeRecord.responseBody.length > 500 ? `...(+${causeRecord.responseBody.length - 500})` : ""}`);
++    }
++  }
++
++  return details.length > 0 ? `${message} (${details.join(", ")})` : message;
++}
++
++function extractResponseApiText(value: unknown): string | null {
++  if (!value || typeof value !== "object") return null;
++  const response = value as {
++    output_text?: unknown;
++    output?: Array<{
++      content?: Array<{ text?: unknown }>;
++    }>;
++  };
++
++  if (typeof response.output_text === "string" && response.output_text.trim()) {
++    return response.output_text.trim();
++  }
++
++  if (!Array.isArray(response.output)) return null;
++  const text = response.output
++    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
++    .map((content) => content.text)
++    .filter((part): part is string => typeof part === "string")
++    .join("")
++    .trim();
++
++  return text || null;
++}
++
++function extractTextFromErrorResponse(err: unknown): string | null {
++  if (!err || typeof err !== "object") return null;
++  const record = err as Record<string, unknown>;
++  const responseBody = typeof record.responseBody === "string"
++    ? record.responseBody
++    : record.cause && typeof record.cause === "object" && typeof (record.cause as Record<string, unknown>).responseBody === "string"
++      ? (record.cause as Record<string, unknown>).responseBody as string
++      : null;
++
++  if (!responseBody) return null;
++
++  try {
++    return extractResponseApiText(JSON.parse(responseBody));
++  } catch {
++    return null;
++  }
++}
++
+ // ============================
+ // Tool definitions (Vercel AI SDK `tool()` format)
+ // ============================
+@@ -239,7 +308,30 @@ export class StandaloneLLMRunner implements LLMRunner {
+       return text;
+     } catch (err) {
+       const totalMs = Date.now() - runStartMs;
+-      const errMsg = err instanceof Error ? err.message : String(err);
++      const errMsg = formatLlmError(err);
++
++      const recoveredText = extractTextFromErrorResponse(err);
++      if (recoveredText) {
++        this.logger?.warn?.(
++          `${TAG} run() recovered Responses API text after ${totalMs}ms: taskId=${params.taskId}, output=${recoveredText.length} chars, originalError=${errMsg}`,
++        );
++
++        if (params.instanceId) {
++          report("llm_call", {
++            taskId: params.taskId,
++            provider: "standalone",
++            model: this.model,
++            inputLength: params.prompt.length,
++            outputLength: recoveredText.length,
++            totalDurationMs: totalMs,
++            success: true,
++            error: null,
++          });
++        }
++
++        return recoveredText;
++      }
++
+       this.logger?.error(`${TAG} run() failed after ${totalMs}ms: ${errMsg}`);
+ 
+       if (params.instanceId) {
+diff --git a/src/config.ts b/src/config.ts
+index e09cff5..c8dd1e5 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -52,6 +52,8 @@ export interface PersonaConfig {
+   backupCount: number;
+   /** Scene blocks backup count (default: 10) */
+   sceneBackupCount: number;
++  /** Scene extraction LLM timeout in milliseconds (default: 300000). */
++  sceneExtractionTimeoutMs: number;
+   /** LLM model for persona generation, format: "provider/model" (falls back to OpenClaw default model when omitted) */
+   model?: string;
+ }
+@@ -472,6 +474,7 @@ export function parseConfig(raw: Record<string, unknown> | undefined): MemoryTda
+       maxScenes: num(personaGroup, "maxScenes") ?? 15,
+       backupCount: num(personaGroup, "backupCount") ?? 3,
+       sceneBackupCount: num(personaGroup, "sceneBackupCount") ?? 10,
++      sceneExtractionTimeoutMs: num(personaGroup, "sceneExtractionTimeoutMs") ?? 300_000,
+       model: optStr(personaGroup, "model"),
+     },
+     pipeline: {
 diff --git a/src/core/store/sqlite.ts b/src/core/store/sqlite.ts
 index b71a05b..3ab2349 100644
 --- a/src/core/store/sqlite.ts
@@ -246,3 +379,125 @@ index 8585b50..157afc3 100644
  }
  
  /** Search parameters for L0 conversation search. */
+diff --git a/src/offload/local-llm/llm-caller.ts b/src/offload/local-llm/llm-caller.ts
+index 95ae691..7175597 100644
+--- a/src/offload/local-llm/llm-caller.ts
++++ b/src/offload/local-llm/llm-caller.ts
+@@ -29,6 +29,75 @@ export interface CallLlmOpts {
+   label?: string;
+ }
+ 
++function formatLlmError(err: unknown): string {
++  const message = err instanceof Error ? err.message : String(err);
++  if (!err || typeof err !== "object") return message;
++
++  const details: string[] = [];
++  const record = err as Record<string, unknown>;
++  if (typeof record.statusCode === "number") details.push(`status=${record.statusCode}`);
++  if (typeof record.responseBody === "string" && record.responseBody.length > 0) {
++    const body = record.responseBody.replace(/\s+/g, " ").slice(0, 500);
++    details.push(`body=${JSON.stringify(body)}${record.responseBody.length > 500 ? `...(+${record.responseBody.length - 500})` : ""}`);
++  }
++
++  const cause = record.cause;
++  if (cause && typeof cause === "object") {
++    const causeRecord = cause as Record<string, unknown>;
++    const causeMessage = cause instanceof Error ? cause.message : undefined;
++    if (causeMessage && causeMessage !== message) details.push(`cause=${JSON.stringify(causeMessage)}`);
++    if (typeof causeRecord.statusCode === "number") details.push(`causeStatus=${causeRecord.statusCode}`);
++    if (typeof causeRecord.responseBody === "string" && causeRecord.responseBody.length > 0) {
++      const body = causeRecord.responseBody.replace(/\s+/g, " ").slice(0, 500);
++      details.push(`causeBody=${JSON.stringify(body)}${causeRecord.responseBody.length > 500 ? `...(+${causeRecord.responseBody.length - 500})` : ""}`);
++    }
++  }
++
++  return details.length > 0 ? `${message} (${details.join(", ")})` : message;
++}
++
++function extractResponseApiText(value: unknown): string | null {
++  if (!value || typeof value !== "object") return null;
++  const response = value as {
++    output_text?: unknown;
++    output?: Array<{
++      content?: Array<{ text?: unknown }>;
++    }>;
++  };
++
++  if (typeof response.output_text === "string" && response.output_text.trim()) {
++    return response.output_text.trim();
++  }
++
++  if (!Array.isArray(response.output)) return null;
++  const text = response.output
++    .flatMap((item) => Array.isArray(item.content) ? item.content : [])
++    .map((content) => content.text)
++    .filter((part): part is string => typeof part === "string")
++    .join("")
++    .trim();
++
++  return text || null;
++}
++
++function extractTextFromErrorResponse(err: unknown): string | null {
++  if (!err || typeof err !== "object") return null;
++  const record = err as Record<string, unknown>;
++  const responseBody = typeof record.responseBody === "string"
++    ? record.responseBody
++    : record.cause && typeof record.cause === "object" && typeof (record.cause as Record<string, unknown>).responseBody === "string"
++      ? (record.cause as Record<string, unknown>).responseBody as string
++      : null;
++
++  if (!responseBody) return null;
++
++  try {
++    return extractResponseApiText(JSON.parse(responseBody));
++  } catch {
++    return null;
++  }
++}
++
+ /**
+  * Call LLM with the given prompts and return the text response.
+  * Throws on timeout or API errors.
+@@ -73,7 +142,15 @@ export async function callLlm(
+     return text;
+   } catch (err) {
+     const elapsedMs = Date.now() - startMs;
+-    const errMsg = err instanceof Error ? err.message : String(err);
++    const errMsg = formatLlmError(err);
++    const recoveredText = extractTextFromErrorResponse(err);
++    if (recoveredText) {
++      logger?.warn?.(
++        `${TAG} ${label} recovered Responses API text (${elapsedMs}ms): output=${recoveredText.length} chars, originalError=${errMsg}`,
++      );
++      return recoveredText;
++    }
++
+     logger?.error?.(`${TAG} ${label} FAILED (${elapsedMs}ms): ${errMsg}`);
+     throw err;
+   }
+diff --git a/src/utils/pipeline-factory.ts b/src/utils/pipeline-factory.ts
+index 4595753..6100d1e 100644
+--- a/src/utils/pipeline-factory.ts
++++ b/src/utils/pipeline-factory.ts
+@@ -374,6 +374,12 @@ export function createL1Runner(opts: {
+           instanceId: getInstanceId?.(),
+         });
+ 
++        if (!l1Result.success) {
++          throw new Error(
++            `L1 extraction failed for session=${sessionKey}, sessionId=${group.sessionId || "(empty)"}`,
++          );
++        }
++
+         totalExtracted += l1Result.extractedCount;
+         totalStored += l1Result.storedCount;
+         if (l1Result.lastSceneName) {
+@@ -514,6 +520,7 @@ export function createL2Runner(opts: {
+       model: cfg.persona.model,
+       maxScenes: cfg.persona.maxScenes,
+       sceneBackupCount: cfg.persona.sceneBackupCount,
++      timeoutMs: cfg.persona.sceneExtractionTimeoutMs,
+       logger,
+       instanceId,
+       llmRunner,

@@ -91,17 +91,20 @@ type CompatibleChatResponse = {
 export class OpenAiChatClient implements ChatClient {
   /** Max tool call rounds per reply to prevent infinite loops. */
   private readonly MAX_TOOL_ROUNDS = 10;
+  /** Automatic retries for transient timeout/abort failures per LLM round. */
+  private readonly timeoutRetries: number;
   private readonly timeoutMs: number;
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly logger?: ChatClientLogger;
 
   constructor(
-    config: { baseUrl: string; apiKey: string; model: string; timeoutMs?: number },
+    config: { baseUrl: string; apiKey: string; model: string; timeoutMs?: number; timeoutRetries?: number },
     logger?: ChatClientLogger,
   ) {
     this.model = config.model;
     this.timeoutMs = config.timeoutMs ?? 30_000;
+    this.timeoutRetries = Math.max(0, Math.floor(config.timeoutRetries ?? 3));
     this.logger = logger;
     this.client = new OpenAI({ baseURL: config.baseUrl, apiKey: config.apiKey });
   }
@@ -137,19 +140,19 @@ export class OpenAiChatClient implements ChatClient {
 
     // ─── Manual step loop ──────────────────────────────────────────────
     for (let step = 1; step <= this.MAX_TOOL_ROUNDS; step++) {
-      const startedAt = Date.now();
+      const roundStartedAt = Date.now();
       this.logger?.info?.(
         `[chat] >>> model=${this.model}, round=${step}, messages=${messages.length}, timeout=${this.timeoutMs}ms`,
       );
 
       // Step 30a-i: Call LLM
       try {
-        const response = await this.client.chat.completions.create(
+        const response = await this.createCompletionWithTimeoutRetry(
           { model: this.model, messages, tools: hasTools ? tools : undefined },
-          { signal: AbortSignal.timeout(this.timeoutMs) },
+          step,
         );
 
-        this.logger?.info?.(`[chat] <<< round=${step} (${Date.now() - startedAt}ms)`);
+        this.logger?.info?.(`[chat] <<< round=${step} (${Date.now() - roundStartedAt}ms)`);
 
         const compatibleResponse = response as CompatibleChatResponse;
         const choice = compatibleResponse.choices?.[0];
@@ -208,12 +211,50 @@ export class OpenAiChatClient implements ChatClient {
         if (choice.finish_reason === "content_filter" || choice.finish_reason === "length") return text;
         if (step === this.MAX_TOOL_ROUNDS) throw new Error("LLM returned an empty reply");
       } catch (error) {
-        this.logger?.error?.(`[chat] FAILED round=${step} (${Date.now() - startedAt}ms): ${this.formatError(error)}`);
+        this.logger?.error?.(`[chat] FAILED round=${step} (${Date.now() - roundStartedAt}ms): ${this.formatError(error)}`);
         throw error;
       }
     }
 
     throw new Error("LLM reached max steps without producing a final answer");
+  }
+
+  private async createCompletionWithTimeoutRetry(
+    params: OpenAI.ChatCompletionCreateParamsNonStreaming,
+    step: number,
+  ): Promise<OpenAI.ChatCompletion> {
+    const maxAttempts = this.timeoutRetries + 1;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const attemptStartedAt = Date.now();
+      try {
+        return await this.client.chat.completions.create(
+          params,
+          { signal: AbortSignal.timeout(this.timeoutMs) },
+        );
+      } catch (error) {
+        if (!this.isTimeoutError(error) || attempt >= maxAttempts) throw error;
+
+        this.logger?.warn?.(
+          `[chat] timeout retry ${attempt}/${this.timeoutRetries} for round=${step} after ${Date.now() - attemptStartedAt}ms: ${this.formatError(error)}`,
+        );
+      }
+    }
+
+    throw new Error("LLM retry loop exited unexpectedly");
+  }
+
+  private isTimeoutError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false;
+    const name = error.name.toLowerCase();
+    const message = error.message.toLowerCase();
+    return (
+      name.includes("abort") ||
+      name.includes("timeout") ||
+      message.includes("aborted") ||
+      message.includes("aborterror") ||
+      message.includes("timeout") ||
+      message.includes("timed out")
+    );
   }
 
   private formatError(error: unknown): string {

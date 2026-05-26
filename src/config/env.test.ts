@@ -28,6 +28,7 @@ describe("parseEnv", () => {
     expect(env.baseUrl).toBe("https://api.openai.com/v1");
     expect(env.model).toBe("gpt-4o-mini");
     expect(env.chatTimeoutMs).toBe(30_000);
+    expect(env.chatTimeoutRetries).toBe(3);
     expect(env.embedding).toEqual({
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-embed",
@@ -105,6 +106,7 @@ describe("parseEnv", () => {
       BASE_URL: "https://api.openai.com/v1",
       MODEL: "gpt-4o-mini",
       CHAT_TIMEOUT_MS: "45000",
+      CHAT_TIMEOUT_RETRIES: "5",
       EMBEDDING_BASE_URL: "https://api.openai.com/v1",
       EMBEDDING_API_KEY: "sk-embed",
       EMBEDDING_MODEL: "text-embedding-3-small",
@@ -139,6 +141,7 @@ describe("parseEnv", () => {
 
     expect(env.offload.enabled).toBe(true);
     expect(env.chatTimeoutMs).toBe(45_000);
+    expect(env.chatTimeoutRetries).toBe(5);
     expect(env.offload.model).toBe("gpt-4o-mini");
     expect(env.offload.mode).toBe("backend");
     expect(env.offload.temperature).toBe(0.1);
