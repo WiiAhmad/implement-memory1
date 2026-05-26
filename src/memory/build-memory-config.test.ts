@@ -28,6 +28,7 @@ const env: AppEnv = {
     personaMaxScenes: 20,
     personaBackupCount: 3,
     personaSceneBackupCount: 10,
+    sceneExtractionTimeoutMs: 300_000,
     pipelineEveryNConversations: 10,
     pipelineWarmup: true,
     l1IdleTimeoutSeconds: 600,
@@ -99,6 +100,13 @@ describe("buildTdaiRawConfig", () => {
       l0l1RetentionDays: 0,
       allowAggressiveCleanup: false,
       cleanTime: "03:00",
+    });
+    expect(raw.persona).toEqual({
+      triggerEveryN: 50,
+      maxScenes: 20,
+      backupCount: 3,
+      sceneBackupCount: 10,
+      sceneExtractionTimeoutMs: 300_000,
     });
   });
 

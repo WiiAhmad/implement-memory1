@@ -1,3 +1,15 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 29]  CHAT SERVICE — Per-User History Management & LRU Eviction
+//  ═══════════════════════════════════════════════════════════════════════
+//  Manages per-user conversation histories with LRU eviction (max 500 users,
+//  20 messages per user). Delegates per-turn logic to ContextAgent.
+//
+//  Flow per user message:
+//    1. Get/create history (LRU tracked)
+//    2. Delegate to ContextAgent.reply() for the full turn pipeline
+//    3. Update history with user query + assistant reply
+// ═══════════════════════════════════════════════════════════════════════
+
 import { ContextAgent } from "../agent/context-agent.ts";
 import type { ContextAgentOptions } from "../agent/context-agent.ts";
 import { buildMemorySessionKey } from "../memory/build-memory-config.ts";
@@ -11,7 +23,9 @@ export class ChatService {
 
   /** Ordered list of user IDs for LRU eviction (most recently used at the end). */
   private readonly userAccessOrder: number[] = [];
+  /** Per-user conversation histories (capped at MAX_HISTORY = 20 messages). */
   private readonly histories = new Map<number, ChatMessage[]>();
+  /** Max messages per user history before older ones are trimmed. */
   private readonly MAX_HISTORY = 20;
   private readonly contextAgent: ContextAgent;
 
@@ -19,10 +33,9 @@ export class ChatService {
     this.contextAgent = new ContextAgent(opts);
   }
 
-  /**
-   * Get or create history for a user, tracking LRU access.
-   * Evicts the least recently used user when over MAX_TRACKED_USERS.
-   */
+  // ─── Step 29a: Get or create user history with LRU tracking ────────
+  //  When access order exceeds MAX_TRACKED_USERS, the least recently used
+  //  user is evicted (removed from the Map and access order array).
   private getOrCreateHistory(telegramUserId: number): ChatMessage[] {
     const idx = this.userAccessOrder.indexOf(telegramUserId);
     if (idx !== -1) {
@@ -45,6 +58,12 @@ export class ChatService {
     return history;
   }
 
+  // ─── Step 29b: Main entry point — reply to a user message ──────────
+  //  1. Build the memory session key ("tg:user:{id}")
+  //  2. Get/create the user's conversation history
+  //  3. Delegate to ContextAgent.reply() for the full pipeline:
+  //     L4 check → recall → offload beforeTurn → prompt build → LLM call with tools → offload afterTurn → capture
+  //  4. Update history with the new user+assistant pair
   async replyToUser(params: { telegramUserId: number; text: string }): Promise<string> {
     const userKey = buildMemorySessionKey(params.telegramUserId);
     const history = this.getOrCreateHistory(params.telegramUserId);
@@ -63,12 +82,10 @@ export class ChatService {
     return result.reply;
   }
 
-  private updateHistory(
-    telegramUserId: number,
-    history: ChatMessage[],
-    userText: string,
-    reply: string,
-  ): void {
+  // ─── Step 29c: Append to history with cap ───────────────────────────
+  //  Adds user message + assistant reply. If history exceeds MAX_HISTORY,
+  //  keeps only the most recent MAX_HISTORY messages.
+  private updateHistory(telegramUserId: number, history: ChatMessage[], userText: string, reply: string): void {
     const updatedHistory = [
       ...history,
       { role: "user" as const, content: userText },

@@ -1,3 +1,12 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 11]  VERIFICATION SERVICE — 6-Digit Code Auth Flow
+//  ═══════════════════════════════════════════════════════════════════════
+//  Handles the one-time verification process for Telegram users.
+//  Flow: User messages bot → code issued (logged to server) → user sends
+//  code → code verified → user can chat.
+//  The code is NEVER sent back to the user via Telegram — only logged server-side.
+// ═══════════════════════════════════════════════════════════════════════
+
 import { appendFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -22,12 +31,13 @@ interface VerificationServiceOptions {
 
 export class VerificationService {
   private readonly now: () => Date;
-  private readonly ttlMs: number;
-  private readonly generateCode: () => string;
-  private readonly appendLog: (message: string) => Promise<void> | void;
+  private readonly ttlMs: number;          // Code TTL (default: 15 min)
+  private readonly generateCode: () => string;  // 6-digit code generator
+  private readonly appendLog: (message: string) => Promise<void> | void;  // Audit log writer
   private readonly logger?: Pick<Logger, "info">;
 
   constructor(private readonly options: VerificationServiceOptions) {
+    // ─── Step 11a: Apply defaults for all injectable dependencies ──────
     this.now = options.now ?? (() => new Date());
     this.ttlMs = options.ttlMs ?? 15 * 60_000;
     this.generateCode = options.generateCode ?? defaultGenerateCode;
@@ -42,14 +52,14 @@ export class VerificationService {
     this.logger = options.logger;
   }
 
+  // ─── Step 11b: Check if user is already verified ─────────────────────
   async isVerified(telegramUserId: string): Promise<boolean> {
     return this.options.store.isVerified(telegramUserId);
   }
 
-  /**
-   * Force-issue a fresh verification code, deleting any existing pending one.
-   * Returns `verified` if the user is already verified.
-   */
+  // ─── Step 11c: Force-issue a fresh verification code ─────────────────
+  //  Called by /verify command. Deletes any existing pending code and
+  //  issues a new one. Returns "verified" if already verified.
   async issueFreshCode(identity: TelegramIdentity): Promise<VerificationResult> {
     if (await this.options.store.isVerified(identity.telegramUserId)) {
       return { kind: "verified" };
@@ -59,6 +69,14 @@ export class VerificationService {
     return this.issueCode(identity, this.now());
   }
 
+  // ─── Step 11d: Handle any text from an unverified user ───────────────
+  //  Called by the text message handler for unverified users.
+  //  Flow:
+  //    1. If verified → return verified
+  //    2. If no pending code → issue one
+  //    3. If pending code expired → issue new one
+  //    4. If wrong code → increment attempts, return invalid_code
+  //    5. If correct code → save as verified, return verified
   async handleUnverifiedInput(
     identity: TelegramIdentity,
     input: string,
@@ -70,14 +88,17 @@ export class VerificationService {
     const pending = await this.options.store.getPending(identity.telegramUserId);
     const now = this.now();
 
+    // No pending code → issue one
     if (!pending) {
       return this.issueCode(identity, now);
     }
 
+    // Code expired → issue new one
     if (new Date(pending.expiresAt).getTime() <= now.getTime()) {
       return this.issueCode(identity, now);
     }
 
+    // Wrong SHA-256 hash → increment attempts, reject
     if (hashCode(input) !== pending.codeHash) {
       await this.options.store.incrementPendingAttempt(identity.telegramUserId);
       return {
@@ -86,6 +107,7 @@ export class VerificationService {
       };
     }
 
+    // ─── Correct code! Save verified user and clean up ──────────────
     const timestamp = now.toISOString();
     const verifiedRecord: VerifiedUserRecord = {
       ...identity,
@@ -109,6 +131,9 @@ export class VerificationService {
     return { kind: "verified" };
   }
 
+  // ─── Step 11e: Issue a verification code ────────────────────────────
+  //  Generates 6-digit code, SHA-256 hashes it, saves the pending record,
+  //  logs the code server-side (NOT sent to user via Telegram).
   private async issueCode(
     identity: TelegramIdentity,
     now: Date,
@@ -124,6 +149,7 @@ export class VerificationService {
       attemptCount: 0,
     };
 
+    // Log the code server-side (operator must read logs to tell user)
     const verificationEntry = JSON.stringify({
       telegramUserId: identity.telegramUserId,
       username: identity.username,
@@ -151,6 +177,7 @@ export class VerificationService {
   }
 }
 
+// ─── Step 11f: Utility functions ───────────────────────────────────────
 function hashCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
 }
@@ -164,6 +191,7 @@ function todayDateStr(): string {
   return `${y}-${m}-${d}`;
 }
 
+/** Generate a random 6-digit code as a string. */
 function defaultGenerateCode(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }

@@ -1,13 +1,12 @@
-/**
- * LLM Client factory for the offload module.
- *
- * Wraps the TencentDB-Agent-Memory library's LocalLlmClient with the bot's
- * environment configuration (baseUrl, apiKey, model, temperature).
- *
- * The LocalLlmClient calls the LLM directly via the Vercel AI SDK
- * (`ai` + `@ai-sdk/openai`) for L1 summarization, L1.5 task judgment,
- * and L2 MMD generation.
- */
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 22]  OFFLOAD LLM CLIENT — Factory for LocalLlmClient
+//  ═══════════════════════════════════════════════════════════════════════
+//  Creates a LocalLlmClient instance for offload LLM tasks:
+//  - L1: Summarize tool call/result pairs into compact OffloadEntry entries
+//  - L1.5: Determine if user activity crosses a task boundary
+//  - L2: Generate Mermaid flowchart MMD files from offload entries
+// ═══════════════════════════════════════════════════════════════════════
+
 import { LocalLlmClient } from "../../TencentDB-Agent-Memory/src/offload/local-llm/index.ts";
 import type { PluginLogger } from "./types.ts";
 
@@ -21,13 +20,12 @@ export interface LlmClientConfig {
 /**
  * Create a LocalLlmClient with the given configuration and logger.
  *
- * The LocalLlmClient is used for optional offload LLM tasks:
- * - L1: summarise tool call/result pairs into compact OffloadEntry entries
- * - L1.5: determine if the user's activity crosses a task boundary
- * - L2: generate Mermaid flowchart MMD files from offload entries
- *
  * Returns null if model or baseUrl is not configured.
  */
+
+// ─── Step 22a: Factory function ────────────────────────────────────────
+//  Validates required config fields before creating the client.
+//  If any required field (baseUrl, apiKey, model) is missing, returns null.
 export function createLocalLlmClient(
   config: LlmClientConfig,
   logger?: PluginLogger,

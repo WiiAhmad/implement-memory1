@@ -27,6 +27,7 @@ describe("parseEnv", () => {
     expect(env.openAIApiKey).toBe("sk-chat");
     expect(env.baseUrl).toBe("https://api.openai.com/v1");
     expect(env.model).toBe("gpt-4o-mini");
+    expect(env.chatTimeoutMs).toBe(30_000);
     expect(env.embedding).toEqual({
       baseUrl: "https://api.openai.com/v1",
       apiKey: "sk-embed",
@@ -47,6 +48,7 @@ describe("parseEnv", () => {
     expect(env.memory.personaMaxScenes).toBe(20);
     expect(env.memory.personaBackupCount).toBe(3);
     expect(env.memory.personaSceneBackupCount).toBe(10);
+    expect(env.memory.sceneExtractionTimeoutMs).toBe(300_000);
     expect(env.memory.pipelineEveryNConversations).toBe(10);
     expect(env.memory.pipelineWarmup).toBe(true);
     expect(env.memory.l1IdleTimeoutSeconds).toBe(600);
@@ -102,6 +104,7 @@ describe("parseEnv", () => {
       OPENAI_API_KEY: "sk-chat",
       BASE_URL: "https://api.openai.com/v1",
       MODEL: "gpt-4o-mini",
+      CHAT_TIMEOUT_MS: "45000",
       EMBEDDING_BASE_URL: "https://api.openai.com/v1",
       EMBEDDING_API_KEY: "sk-embed",
       EMBEDDING_MODEL: "text-embedding-3-small",
@@ -131,9 +134,11 @@ describe("parseEnv", () => {
       OFFLOAD_MMD_MAX_TOKEN_RATIO: "0.15",
       OFFLOAD_L2_NULL_THRESHOLD: "2",
       OFFLOAD_L2_TIMEOUT_SECONDS: "600",
+      MEMORY_SCENE_EXTRACTION_TIMEOUT_MS: "450000",
     });
 
     expect(env.offload.enabled).toBe(true);
+    expect(env.chatTimeoutMs).toBe(45_000);
     expect(env.offload.model).toBe("gpt-4o-mini");
     expect(env.offload.mode).toBe("backend");
     expect(env.offload.temperature).toBe(0.1);
@@ -159,6 +164,7 @@ describe("parseEnv", () => {
     expect(env.offload.mmdMaxTokenRatio).toBe(0.15);
     expect(env.offload.l2NullThreshold).toBe(2);
     expect(env.offload.l2TimeoutSeconds).toBe(600);
+    expect(env.memory.sceneExtractionTimeoutMs).toBe(450_000);
   });
 });
 

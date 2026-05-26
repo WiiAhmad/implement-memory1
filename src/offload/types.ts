@@ -1,13 +1,12 @@
-/**
- * Offload configuration types for the Telegram bot.
- *
- * These types wrap the TencentDB-Agent-Memory offload module's configuration
- * into a format suitable for the bot's env-based config system.
- *
- * All defaults match the library's PLUGIN_DEFAULTS.
- */
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 20]  OFFLOAD TYPES — Configuration & Re-exports for Offload Module
+//  ═══════════════════════════════════════════════════════════════════════
+//  Defines the OffloadConfig type (parsed from env vars) and re-exports
+//  types from the TencentDB-Agent-Memory library's offload module.
+//  All default values match PLUGIN_DEFAULTS from the library.
+// ═══════════════════════════════════════════════════════════════════════
 
-// ─── Re-exports from the library ────────────────────────────────────────
+// ─── Step 20a: Re-exports from the TDAI library ───────────────────────
 
 export type {
   OffloadEntry,
@@ -22,12 +21,10 @@ export type {
   StorageContext,
 } from "../../TencentDB-Agent-Memory/src/offload/storage.ts";
 
-// ─── Bot-level OffloadConfig ────────────────────────────────────────────
+// ─── Step 20b: Bot-level OffloadConfig ────────────────────────────────
+//  Controls all layers of the offload context compression system.
+//  Parsed from OFFLOAD_* environment variables in src/config/env.ts.
 
-/**
- * Offload configuration parsed from environment variables.
- * Controls all layers of the offload system.
- */
 export interface OffloadConfig {
   /** Master switch — when false, all offload operations are no-ops. */
   enabled: boolean;
@@ -109,9 +106,7 @@ export interface OffloadConfig {
   l2TimeoutSeconds: number;
 }
 
-/**
- * Default values for OffloadConfig fields.
- */
+// ─── Step 20c: Default values for all OffloadConfig fields ────────────
 export const DEFAULT_OFFLOAD_CONFIG: OffloadConfig = {
   enabled: false,
   model: undefined,

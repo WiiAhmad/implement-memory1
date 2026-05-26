@@ -1,3 +1,14 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 18]  TENCENT MEMORY ADAPTER — TDAI Engine Wrapper
+//  ═══════════════════════════════════════════════════════════════════════
+//  Concrete implementation of MemoryAdapter backed by the
+//  TencentDB-Agent-Memory engine (TDAI). Handles:
+//  - Initialization (StandaloneHostAdapter + TdaiCore)
+//  - Memory recall before each LLM turn
+//  - Memory capture after each LLM turn
+//  - Graceful shutdown via core.destroy()
+// ═══════════════════════════════════════════════════════════════════════
+
 import { StandaloneHostAdapter } from "../../TencentDB-Agent-Memory/src/adapters/standalone/host-adapter.ts";
 import { parseConfig } from "../../TencentDB-Agent-Memory/src/config.ts";
 import { TdaiCore } from "../../TencentDB-Agent-Memory/src/core/tdai-core.ts";
@@ -10,6 +21,10 @@ import type { MemoryAdapter, MemoryRecall } from "./types.ts";
 export class TencentMemoryAdapter implements MemoryAdapter {
   constructor(private readonly core: TdaiCore) {}
 
+  // ─── Step 18a: Factory — create TDAI engine and wire dependencies ─────
+  //  1. Create StandaloneHostAdapter (standalone mode, no OpenClaw plugin)
+  //  2. Parse full config from environment variables
+  //  3. Initialize TdaiCore (L0 recorder, L1 extractor, persona, scenes, etc.)
   static async create(env: AppEnv, paths: AppPaths, logger: Logger): Promise<TencentMemoryAdapter> {
     const hostAdapter = new StandaloneHostAdapter({
       dataDir: paths.memoryDir,
@@ -31,6 +46,10 @@ export class TencentMemoryAdapter implements MemoryAdapter {
     return new TencentMemoryAdapter(core);
   }
 
+  // ─── Step 18b: Recall memories before an LLM turn ───────────────────
+  //  Delegates to TdaiCore.handleBeforeRecall() which runs:
+  //  - BM25 keyword search for relevant memories
+  //  - Persona/scene context assembly
   async recall(userKey: string, query: string): Promise<MemoryRecall> {
     const result = await this.core.handleBeforeRecall(query, userKey);
     return {
@@ -39,6 +58,12 @@ export class TencentMemoryAdapter implements MemoryAdapter {
     };
   }
 
+  // ─── Step 18c: Capture a completed turn into memory ─────────────────
+  //  Builds a CompletedTurn object with user + assistant messages and
+  //  delegates to TdaiCore.handleTurnCommitted() which triggers:
+  //  - L0 recording (raw dialogue)
+  //  - L1 extraction (structured memories)
+  //  - Persona updates (every N conversations)
   async capture(userKey: string, userText: string, assistantText: string): Promise<void> {
     const startedAt = Date.now();
     const turn: CompletedTurn = {
@@ -70,6 +95,7 @@ export class TencentMemoryAdapter implements MemoryAdapter {
     return this.core;
   }
 
+  // ─── Step 18d: Graceful shutdown ────────────────────────────────────
   async close(): Promise<void> {
     await this.core.destroy();
   }

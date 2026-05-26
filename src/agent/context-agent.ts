@@ -1,3 +1,19 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 37]  CONTEXT AGENT — Per-Turn Pipeline Orchestrator
+//  ═══════════════════════════════════════════════════════════════════════
+//  Owns the per-turn context pipeline for a single LLM conversation turn.
+//  Called by ChatService for each user message.
+//
+//  Full Turn Flow (reply method):
+//    1. tryCreateSkill    → Check for L4 /create-skill command
+//    2. recall            → Retrieve relevant memories (TDAI engine)
+//    3. prepareOffload    → Run offload beforeTurn (L3 compression)
+//    4. build prompt      → Assemble system + user + history messages
+//    5. LLM call          → Send to OpenAI with tool loop
+//    6. offload afterTurn → Flush L1 entries, L1.5 judgment, schedule L2
+//    7. capture           → Save turn to long-term memory (TDAI engine)
+// ═══════════════════════════════════════════════════════════════════════
+
 import type { Logger } from "../../TencentDB-Agent-Memory/src/core/types.ts";
 import type { MemoryAdapter } from "../memory/types.ts";
 import type { ChatClient, ChatMessage } from "../openai/chat-client.ts";
@@ -10,19 +26,8 @@ export interface ContextAgentOptions {
   memory: MemoryAdapter;
   chatClient: ChatClient;
   logger: Logger;
-  /** Custom prompt builder for assembling LLM requests. */
   promptBuilder?: PromptBuilder;
-  /**
-   * Optional tool handler for memory search tools (tdai_memory_search,
-   * tdai_conversation_search). When provided, the LLM can proactively
-   * search memories and conversations during a turn.
-   */
   toolHandler?: ToolHandler;
-  /**
-   * Optional offload service for context compression and L1 summarization.
-   * When provided, beforeTurn()/onToolCall()/afterTurn() lifecycle hooks
-   * are called during reply().
-   */
   offloadService?: OffloadService;
 }
 
@@ -38,12 +43,6 @@ export interface ContextAgentReplyResult {
   updateHistory: boolean;
 }
 
-/**
- * Owns the per-turn context pipeline for the chat agent.
- *
- * ChatService handles user history storage; ContextAgent handles all context
- * assembly and side effects around a single LLM turn.
- */
 export class ContextAgent {
   private readonly promptBuilder: PromptBuilder;
   private readonly toolHandler?: ToolHandler;
@@ -55,22 +54,31 @@ export class ContextAgent {
     this.offloadService = opts.offloadService;
   }
 
+  // ─── Step 37a: Main reply method (full turn pipeline) ────────────────
+  //  Returns the bot's reply and whether to update conversation history.
   async reply(params: ContextAgentReplyParams): Promise<ContextAgentReplyResult> {
     const startedAt = Date.now();
     const { telegramUserId, userKey, text, history } = params;
 
+    // ─── Step 37a-i: Check for L4 /create-skill command ─────────────
+    //  If matched, handles the skill generation and returns immediately
+    //  without going through the normal chat pipeline.
     const l4Result = await this.tryCreateSkill(userKey, text);
     if (l4Result) {
-      this.opts.logger.info(
-        `[timing] replyToUser L4 command total: ${Date.now() - startedAt}ms (user=${telegramUserId})`,
-      );
+      this.opts.logger.info(`[timing] replyToUser L4 command total: ${Date.now() - startedAt}ms (user=${telegramUserId})`);
       return { reply: l4Result, updateHistory: false };
     }
 
+    // ─── Step 37a-ii: Recall relevant memories ──────────────────────
+    //  Fetches L1 memories and persona/scene context from TDAI engine.
     const recall = await this.recall(userKey, text);
     this.toolHandler?.resetCallCount(userKey);
 
+    // ─── Step 37a-iii: Offload beforeTurn (L3 compression) ──────────
+    //  Compresses conversation history if above context window thresholds.
     const previousMessages = await this.prepareOffloadMessages(userKey, text, history);
+
+    // ─── Step 37a-iv: Build prompt ──────────────────────────────────
     const promptStartAt = Date.now();
     const prompt = this.promptBuilder.build({
       prependContext: recall.prependContext,
@@ -80,6 +88,7 @@ export class ContextAgent {
     });
     this.opts.logger.debug?.(`[timing] prompt.build: ${Date.now() - promptStartAt}ms`);
 
+    // ─── Step 37a-v: LLM call with tool loop ────────────────────────
     const offloadToolTasks: Promise<void>[] = [];
     const llmStartedAt = Date.now();
     let reply: string;
@@ -95,58 +104,47 @@ export class ContextAgent {
         onToolCallResult: this.offloadService
           ? (tc) => {
               const task = this.offloadService!.onToolCall({
-                userKey,
-                toolName: tc.toolName,
-                toolCallId: tc.toolCallId,
-                params: tc.params,
-                result: tc.result,
-              }).catch((err: unknown) =>
-                this.opts.logger.warn(`[offload] onToolCall error: ${this.formatError(err)}`),
-              );
+                userKey, toolName: tc.toolName, toolCallId: tc.toolCallId,
+                params: tc.params, result: tc.result,
+              }).catch((err: unknown) => this.opts.logger.warn(`[offload] onToolCall error: ${this.formatError(err)}`));
               offloadToolTasks.push(task);
               void task;
             }
           : undefined,
         onStepFinish: this.offloadService
           ? async (messages) => {
-              try {
-                await this.offloadService!.onStepFinish(messages, userKey);
-              } catch (err: unknown) {
-                this.opts.logger.warn(`[offload] onStepFinish error: ${this.formatError(err)}`);
-              }
+              try { await this.offloadService!.onStepFinish(messages, userKey); }
+              catch (err: unknown) { this.opts.logger.warn(`[offload] onStepFinish error: ${this.formatError(err)}`); }
             }
           : undefined,
       });
       this.opts.logger.info(`[timing] llm.reply: ${Date.now() - llmStartedAt}ms`);
     } catch (error) {
-      await this.handleFailedReply(error, {
-        userKey,
-        userText: text,
-        llmStartedAt,
-        offloadToolTasks,
-      });
+      await this.handleFailedReply(error, { userKey, userText: text, llmStartedAt, offloadToolTasks });
       throw error;
     }
 
+    // ─── Step 37a-vi: Offload afterTurn ─────────────────────────────
+    //  Flushes L1 tool pairs, runs L1.5 task boundary judgment, schedules L2.
     await this.runOffloadAfterTurn(userKey, text, offloadToolTasks, false);
+
+    // ─── Step 37a-vii: Capture turn to memory ──────────────────────
+    //  Saves the completed user+assistant turn to TDAI long-term memory.
     await this.capture(userKey, text, reply);
 
-    this.opts.logger.info(
-      `[timing] replyToUser total: ${Date.now() - startedAt}ms (user=${telegramUserId})`,
-    );
+    this.opts.logger.info(`[timing] replyToUser total: ${Date.now() - startedAt}ms (user=${telegramUserId})`);
     return { reply, updateHistory: true };
   }
 
+  // ─── Step 37b: Try to handle L4 /create-skill command ───────────────
   private async tryCreateSkill(userKey: string, text: string): Promise<string | null> {
     const createSkill = this.offloadService?.createSkillFromCommand;
     if (typeof createSkill !== "function") return null;
     return await createSkill.call(this.offloadService, userKey, text);
   }
 
-  private async recall(
-    userKey: string,
-    text: string,
-  ): Promise<{ prependContext: string; appendSystemContext: string }> {
+  // ─── Step 37c: Recall memories from TDAI engine ─────────────────────
+  private async recall(userKey: string, text: string): Promise<{ prependContext: string; appendSystemContext: string }> {
     const recallStartedAt = Date.now();
     try {
       const recall = await this.opts.memory.recall(userKey, text);
@@ -156,69 +154,42 @@ export class ContextAgent {
         appendSystemContext: recall.appendSystemContext ?? "",
       };
     } catch (error) {
-      this.opts.logger.warn(
-        `Memory recall failed (${Date.now() - recallStartedAt}ms): ${this.formatError(error)}`,
-      );
+      this.opts.logger.warn(`Memory recall failed (${Date.now() - recallStartedAt}ms): ${this.formatError(error)}`);
       return { prependContext: "", appendSystemContext: "" };
     }
   }
 
-  private async prepareOffloadMessages(
-    userKey: string,
-    userText: string,
-    history: ChatMessage[],
-  ): Promise<ChatMessage[]> {
+  // ─── Step 37d: Run offload beforeTurn (L3 compression) ─────────────
+  private async prepareOffloadMessages(userKey: string, userText: string, history: ChatMessage[]): Promise<ChatMessage[]> {
     if (!this.offloadService) return history;
-
     const offloadStartedAt = Date.now();
-    const messages = await this.offloadService.beforeTurn({
-      userKey,
-      userText,
-      previousMessages: history,
-    });
+    const messages = await this.offloadService.beforeTurn({ userKey, userText, previousMessages: history });
     this.opts.logger.info(`[timing] offload.beforeTurn: ${Date.now() - offloadStartedAt}ms`);
     return messages as ChatMessage[];
   }
 
-  private async handleFailedReply(
-    error: unknown,
-    params: {
-      userKey: string;
-      userText: string;
-      llmStartedAt: number;
-      offloadToolTasks: Promise<void>[];
-    },
-  ): Promise<void> {
+  // ─── Step 37e: Handle LLM reply failure ─────────────────────────────
+  private async handleFailedReply(error: unknown, params: {
+    userKey: string; userText: string; llmStartedAt: number; offloadToolTasks: Promise<void>[];
+  }): Promise<void> {
     const errorStr = this.formatError(error);
     this.opts.logger.info(`[timing] llm.reply FAILED: ${Date.now() - params.llmStartedAt}ms`);
 
     if (isTokenOverflowError(error)) {
-      this.opts.logger.warn(
-        `[chat] Token overflow detected: ${errorStr} - reporting to offload service`,
-      );
+      this.opts.logger.warn(`[chat] Token overflow detected: ${errorStr} - reporting to offload service`);
       this.offloadService?.reportTokenOverflow(params.userKey).catch((err: unknown) =>
         this.opts.logger.warn(`[offload] reportTokenOverflow failed: ${this.formatError(err)}`),
       );
     }
 
     if (params.offloadToolTasks.length > 0) {
-      await this.runOffloadAfterTurn(
-        params.userKey,
-        params.userText,
-        params.offloadToolTasks,
-        true,
-      );
+      await this.runOffloadAfterTurn(params.userKey, params.userText, params.offloadToolTasks, true);
     }
   }
 
-  private async runOffloadAfterTurn(
-    userKey: string,
-    userText: string,
-    offloadToolTasks: Promise<void>[],
-    afterFailedReply: boolean,
-  ): Promise<void> {
+  // ─── Step 37f: Run offload afterTurn ────────────────────────────────
+  private async runOffloadAfterTurn(userKey: string, userText: string, offloadToolTasks: Promise<void>[], afterFailedReply: boolean): Promise<void> {
     if (!this.offloadService) return;
-
     const afterTurnStartedAt = Date.now();
     await Promise.allSettled(offloadToolTasks);
     try {
@@ -227,20 +198,15 @@ export class ContextAgent {
       const label = afterFailedReply ? "afterTurn after failed reply" : "afterTurn";
       this.opts.logger.warn(`[offload] ${label} failed: ${this.formatError(err)}`);
     }
-
-    const timingLabel = afterFailedReply
-      ? "offload.afterTurn after failed reply"
-      : "offload.afterTurn";
+    const timingLabel = afterFailedReply ? "offload.afterTurn after failed reply" : "offload.afterTurn";
     this.opts.logger.info(`[timing] ${timingLabel}: ${Date.now() - afterTurnStartedAt}ms`);
   }
 
+  // ─── Step 37g: Capture turn to long-term memory ────────────────────
   private async capture(userKey: string, text: string, reply: string): Promise<void> {
     const captureStartedAt = Date.now();
-    try {
-      await this.opts.memory.capture(userKey, text, reply);
-    } catch (err) {
-      this.opts.logger.warn(`Memory capture failed: ${this.formatError(err)}`);
-    }
+    try { await this.opts.memory.capture(userKey, text, reply); }
+    catch (err) { this.opts.logger.warn(`Memory capture failed: ${this.formatError(err)}`); }
     this.opts.logger.info(`[timing] memory.capture: ${Date.now() - captureStartedAt}ms`);
   }
 

@@ -6,11 +6,12 @@
   "scripts": {
     "start": "bun run dist/index.js",
     "dev": "bun --watch index.ts",
-    "build": "bun build index.ts --outdir dist --target bun",
+    "build": "bun build index.ts --outdir dist --target bun --sourcemap --external @node-rs/jieba --external @node-rs/jieba/dict --external @node-rs/jieba-win32-x64-msvc",
     "patch": "bun run scripts/apply-vendor-patch.ts",
     "test": "bun test ./src/**/*.test.ts",
     "test:prod": "bun test ./test/prod/**/*.test.ts",
-    "postinstall": "bun install --cwd ./TencentDB-Agent-Memory"
+    "validate:steps": "bun run scripts/validate-step-numbers.ts",
+    "postinstall": "bun run patch && bun install --cwd ./TencentDB-Agent-Memory"
   },
   "devDependencies": {
     "@types/bun": "latest"

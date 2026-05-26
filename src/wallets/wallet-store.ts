@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 13]  WALLET STORE — SQLite-backed Wallet Persistence
+//  ═══════════════════════════════════════════════════════════════════════
+//  Manages wallet data in SQLite via bun:sqlite. Handles CRUD operations
+//  for wallets with: creation, listing, activation, deletion.
+//  Uses WAL mode for concurrent read performance.
+// ═══════════════════════════════════════════════════════════════════════
+
 import { Database } from "bun:sqlite";
 import type { StoredWalletRecord, WalletPublicRecord, WalletRecord } from "./types.ts";
 
@@ -15,6 +23,11 @@ export class WalletStore {
   private readonly db: Database;
 
   constructor(dbFile: string) {
+    // ─── Step 13a: Open SQLite DB with schema initialization ───────────
+    //  Creates the wallets table if it doesn't exist.
+    //  Adds index on telegram_user_id for efficient per-user queries.
+    //  Adds partial unique index for "one active wallet per user".
+    //  Auto-assigns active wallet to newest wallet if none set.
     this.db = new Database(dbFile);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
@@ -33,11 +46,14 @@ export class WalletStore {
       ON wallets (telegram_user_id);
     `);
 
+    // Migration: add is_active column if missing (backward compat)
     const columns = this.db.query("PRAGMA table_info(wallets)").all() as Array<{ name: string }>;
     if (!columns.some((column) => column.name === "is_active")) {
       this.db.exec("ALTER TABLE wallets ADD COLUMN is_active INTEGER NOT NULL DEFAULT 0");
     }
 
+    // Partial unique index: only one active wallet per user
+    // Auto-activate the newest wallet if user has no active one
     this.db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_wallets_one_active_per_user
       ON wallets (telegram_user_id)
@@ -54,6 +70,9 @@ export class WalletStore {
     `);
   }
 
+  // ─── Step 13b: Save a new wallet ─────────────────────────────────────
+  //  If the record is marked as active, deactivate all other wallets
+  //  for the same user first (ensures one-active constraint).
   async saveWallet(record: WalletRecord): Promise<void> {
     if (record.isActive) {
       this.db.query(`
@@ -82,6 +101,7 @@ export class WalletStore {
     );
   }
 
+  // ─── Step 13c: Count wallets for a user (for limit enforcement) ──────
   async countWallets(telegramUserId: string): Promise<number> {
     const row = this.db.query(`
       SELECT COUNT(*) AS count
@@ -92,6 +112,7 @@ export class WalletStore {
     return row.count;
   }
 
+  // ─── Step 13d: List all wallet public addresses for a user ───────────
   async listWallets(telegramUserId: string): Promise<WalletPublicRecord[]> {
     const rows = this.db.query(`
       SELECT public_address, is_active
@@ -106,11 +127,13 @@ export class WalletStore {
     }));
   }
 
+  // ─── Step 13e: List just the public addresses (no active status) ─────
   async listPublicAddresses(telegramUserId: string): Promise<string[]> {
     const rows = await this.listWallets(telegramUserId);
     return rows.map((row) => row.publicAddress);
   }
 
+  // ─── Step 13f: Get the currently active wallet's public address ──────
   async getActivePublicAddress(telegramUserId: string): Promise<string | null> {
     const row = this.db.query(`
       SELECT public_address
@@ -123,6 +146,8 @@ export class WalletStore {
     return row?.public_address ?? null;
   }
 
+  // ─── Step 13g: Set a specific wallet as active ───────────────────────
+  //  Runs in a transaction: deactivates all wallets, then activates the target.
   async setActiveWallet(telegramUserId: string, publicAddress: string): Promise<boolean> {
     const wallet = await this.findWalletForUser(telegramUserId, publicAddress);
     if (!wallet) return false;
@@ -147,6 +172,9 @@ export class WalletStore {
     }
   }
 
+  // ─── Step 13h: Delete a wallet ───────────────────────────────────────
+  //  Runs in a transaction. If the deleted wallet was active, promotes
+  //  the next most recent wallet to active.
   async deleteWallet(telegramUserId: string, publicAddress: string): Promise<string | null | false> {
     const wallet = await this.findWalletForUser(telegramUserId, publicAddress);
     if (!wallet) return false;
@@ -160,6 +188,7 @@ export class WalletStore {
 
       let newActivePublicAddress: string | null = null;
       if (wallet.isActive) {
+        // Deleted wallet was active — promote the most recent remaining wallet
         const replacement = this.db.query(`
           SELECT public_address
           FROM wallets
@@ -188,6 +217,7 @@ export class WalletStore {
     }
   }
 
+  // ─── Step 13i: Look up a specific wallet by user + public address ────
   async findWalletForUser(
     telegramUserId: string,
     publicAddress: string,
@@ -212,6 +242,7 @@ export class WalletStore {
     };
   }
 
+  // ─── Step 13j: Close the database connection ────────────────────────
   close(): void {
     this.db.close();
   }

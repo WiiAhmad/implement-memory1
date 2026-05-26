@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 2]  MAIN STARTUP — Dependency Wiring & Service Initialization
+//  ═══════════════════════════════════════════════════════════════════════
+//  Called from index.ts. This function orchestrates ALL service creation:
+//  config → logging → auth → wallets → memory → openai → tools →
+//  offload → chat service → telegram bot → polling loop.
+// ═══════════════════════════════════════════════════════════════════════
+
 import { JsonAuthStore } from "./auth/auth-store.ts";
 import { VerificationService } from "./auth/verification-service.ts";
 import { parseEnv } from "./config/env.ts";
@@ -16,22 +24,39 @@ import { WalletService } from "./wallets/wallet-service.ts";
 import { WalletStore } from "./wallets/wallet-store.ts";
 
 export async function start(): Promise<void> {
+  // ─── Step 2a: Parse environment variables ──────────────────────────────
+  //  Reads .env / process.env via Zod schema validation.
+  //  All config lives in src/config/env.ts — if parsing fails, app exits.
   const env = parseEnv(process.env);
+  // ─── Step 2b: Resolve all runtime directory paths ──────────────────────
+  //  Constructs absolute paths for auth, logs, memory, wallets dirs.
   const paths = resolveDataPaths(env.memoryRoot);
 
-  // Log to both console (stdout) and a .jsonl file for structured debugging
+  // ─── Step 2c: Create dual loggers (console + JSONL file) ──────────────
+  //  Console logger → stdout for dev visibility.
+  //  File logger → structured .jsonl for production debugging.
   const consoleLogger = createLogger();
   const fileLogger = createJsonlLogger({ logsDir: paths.logsDir });
   const logger = combineLoggers(consoleLogger, fileLogger);
 
+  // ─── Step 2d: Ensure all runtime directories exist on disk ─────────────
+  //  Creates: data/, data/auth/, data/logs/, data/memory-tdai/, data/wallets/
   await ensureRuntimeDirectories(paths);
 
+  // ─── Step 2e: Initialize Auth Store + Verification Service ────────────
+  //  Auth store reads/writes JSON files for pending codes and verified users.
+  //  Verification service handles 6-digit code flow for Telegram access.
   const authStore = new JsonAuthStore(paths);
   const verificationService = new VerificationService({
     store: authStore,
     verificationLogFile: paths.verificationLogFile,
     logger,
   });
+
+  // ─── Step 2f: Initialize Wallet Stores + Wallet Service ────────────────
+  //  Primary store = main SQLite DB for wallet data.
+  //  Backup store = separate SQLite DB for disaster recovery.
+  //  Wallet service orchestrates create/list/activate/delete operations.
   const primaryWalletStore = new WalletStore(paths.walletsDbFile);
   const backupWalletStore = new WalletStore(paths.walletsBackupDbFile);
   const walletService = new WalletService({
@@ -39,26 +64,39 @@ export async function start(): Promise<void> {
     backupStore: backupWalletStore,
     logger,
   });
+
+  // ─── Step 2g: Initialize Private Key Access Service ───────────────────
+  //  Handles the 6-digit code flow for revealing wallet private keys.
   const privateKeyAccessService = new PrivateKeyAccessService({
     walletStore: primaryWalletStore,
     verificationLogFile: paths.verificationLogFile,
     logger,
   });
 
+  // ─── Step 2h: Initialize Memory Adapter (TencentDB-Agent-Memory) ───────
+  //  Wraps the TDAI core: L0 recording, L1 extraction, persona, scene nav.
+  //  Powers recall (before LLM) and capture (after LLM) for each turn.
   const memory = await TencentMemoryAdapter.create(env, paths, logger);
+
+  // ─── Step 2i: Initialize OpenAI Chat Client ────────────────────────────
+  //  Wraps the OpenAI SDK with a manual step loop for tool call handling.
+  //  Used for ALL LLM replies to the user.
   const chatClient = new OpenAiChatClient({
     baseUrl: env.baseUrl,
     apiKey: env.openAIApiKey,
     model: env.model,
-    timeoutMs: 30_000,
+    timeoutMs: env.chatTimeoutMs,
   }, logger);
 
-  // Wire memory search tools so the LLM can proactively search memories
-  // during a conversation turn (tdai_memory_search, tdai_conversation_search).
+  // ─── Step 2j: Wire memory search tools for the LLM ─────────────────────
+  //  Exposes tdai_memory_search + tdai_conversation_search as callable tools.
+  //  The LLM can proactively search memories during a conversation turn.
   const toolHandler = new ToolHandler({ core: memory.getCore(), logger });
 
-  // Optional offload service for context compression
-  // When OFFLOAD_MODEL is not set, falls back to the main chat MODEL.
+  // ─── Step 2k: Initialize Offload Service (optional) ───────────────────
+  //  Context compression engine: L3 (inline), L1 (summarization),
+  //  L1.5 (task boundaries), L2 (MMD generation).
+  //  Only active when OFFLOAD_ENABLED=true.
   const offloadConfig = {
     ...env.offload,
     model: env.offload.model || env.model,
@@ -74,8 +112,14 @@ export async function start(): Promise<void> {
       })
     : undefined;
 
+  // ─── Step 2l: Create Chat Service ──────────────────────────────────────
+  //  Manages per-user conversation histories with LRU eviction (max 500 users).
+  //  Delegates per-turn logic to ContextAgent (recall → prompt → LLM → capture).
   const chatService = new ChatService({ memory, chatClient, logger, toolHandler, offloadService });
 
+  // ─── Step 2m: Create Telegram Bot ──────────────────────────────────────
+  //  grammy Bot instance with command handlers (/start, /verify, /wallets-*)
+  //  and the main text message handler for chat + verification.
   const bot = createBot({
     token: env.botToken,
     logger,
@@ -85,6 +129,9 @@ export async function start(): Promise<void> {
     privateKeyAccessService,
   });
 
+  // ─── Step 2n: Graceful Shutdown Handler ────────────────────────────────
+  //  Catches SIGINT/SIGTERM → stops bot polling, closes offload sessions,
+  //  closes wallet DBs, flushes memory engine, closes loggers, exits.
   let polling: Promise<void> | null = null;
   const shutdown = async () => {
     if (polling) {
@@ -104,6 +151,9 @@ export async function start(): Promise<void> {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
+  // ─── Step 2o: Start Long-Polling ───────────────────────────────────────
+  //  Begins the Telegram bot's long-polling loop.
+  //  This promise never resolves under normal operation (runs until shutdown).
   logger.info("Starting Telegram bot with long polling");
   polling = bot.start();
   await polling;

@@ -1,9 +1,22 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 19]  BUILD MEMORY CONFIG — TDAI Engine Configuration Assembly
+//  ═══════════════════════════════════════════════════════════════════════
+//  Converts the bot's AppEnv (parsed from env vars) into the raw config
+//  format expected by TDAI's parseConfig(). Also provides the session key
+//  builder for mapping Telegram user IDs to memory sessions.
+// ═══════════════════════════════════════════════════════════════════════
+
 import type { AppEnv } from "../config/env.ts";
 
+// ─── Step 19a: Build a memory session key from a Telegram user ID ──────
+//  Format: "tg:user:{id}" — used to scope all memory operations per user.
 export function buildMemorySessionKey(telegramUserId: number | string): string {
   return `tg:user:${telegramUserId}`;
 }
 
+// ─── Step 19b: Build raw config for TDAI engine ───────────────────────
+//  Maps the AppEnv groups (memory, offload, embedding) to the TDAI
+//  raw config shape (snake_case keys expected by parseConfig()).
 export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
   return {
     storeBackend: env.memory.storeBackend,
@@ -23,6 +36,7 @@ export function buildTdaiRawConfig(env: AppEnv): Record<string, unknown> {
       maxScenes: env.memory.personaMaxScenes,
       backupCount: env.memory.personaBackupCount,
       sceneBackupCount: env.memory.personaSceneBackupCount,
+      sceneExtractionTimeoutMs: env.memory.sceneExtractionTimeoutMs,
     },
     pipeline: {
       everyNConversations: env.memory.pipelineEveryNConversations,

@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 16]  PRIVATE KEY ACCESS SERVICE — Code-Protected Key Revelation
+//  ═══════════════════════════════════════════════════════════════════════
+//  Provides a secure way to reveal wallet private keys via a 6-digit code flow.
+//  Code is logged server-side (never sent via Telegram).
+//  User must send the code as their next message to reveal the private key.
+// ═══════════════════════════════════════════════════════════════════════
+
 import { appendFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -17,9 +25,9 @@ interface WalletReader {
 }
 
 interface PendingPrivateKeyRequest {
-  codeHash: string;
-  publicAddress: string;
-  expiresAt: string;
+  codeHash: string;        // SHA-256 hash of the code
+  publicAddress: string;   // Which wallet the user wants to unlock
+  expiresAt: string;       // ISO timestamp of expiry
 }
 
 interface PrivateKeyAccessServiceOptions {
@@ -27,12 +35,14 @@ interface PrivateKeyAccessServiceOptions {
   verificationLogFile?: string;
   logger?: Pick<Logger, "info" | "error">;
   now?: () => Date;
-  ttlMs?: number;
+  ttlMs?: number;          // Code TTL (default: 15 min)
   generateCode?: () => string;
   appendLog?: (message: string) => Promise<void> | void;
 }
 
 export class PrivateKeyAccessService {
+  // ─── Step 16a: In-memory pending request store (per user) ────────────
+  //  Not persisted to disk — codes are short-lived (15 min TTL).
   private readonly pending = new Map<string, PendingPrivateKeyRequest>();
   private readonly now: () => Date;
   private readonly ttlMs: number;
@@ -40,6 +50,7 @@ export class PrivateKeyAccessService {
   private readonly appendLog: (message: string) => Promise<void> | void;
 
   constructor(private readonly options: PrivateKeyAccessServiceOptions) {
+    // ─── Step 16b: Apply defaults ───────────────────────────────────────
     this.now = options.now ?? (() => new Date());
     this.ttlMs = options.ttlMs ?? 15 * 60_000;
     this.generateCode = options.generateCode ?? defaultGenerateCode;
@@ -51,6 +62,10 @@ export class PrivateKeyAccessService {
     });
   }
 
+  // ─── Step 16c: Issue a private key access request ────────────────────
+  //  1. Validate the wallet exists for this user
+  //  2. Generate 6-digit code, SHA-256 hash it, store pending request
+  //  3. Log the code server-side (operator reads it to the user)
   async issueRequest(
     identity: TelegramIdentity,
     publicAddress: string,
@@ -98,6 +113,16 @@ export class PrivateKeyAccessService {
     return { kind: "issued", expiresAt };
   }
 
+  // ─── Step 16d: Consume the next message for code validation ──────────
+  //  Called by the text handler for EVERY message (checks if user has
+  //  a pending private key request).
+  //  Flow:
+  //    1. Check if user has a pending request → if not, return "none"
+  //    2. Check expiry → if expired, return "canceled:expired"
+  //    3. Check if input is 6 digits → if not, return "canceled:unexpected_message"
+  //    4. Check SHA-256 hash match → if wrong, return "canceled:wrong_code"
+  //    5. Look up wallet again → if gone, return "canceled:not_found"
+  //    6. Return revealed private key
   async consumeNextMessage(
     identity: TelegramIdentity,
     input: string,
@@ -105,6 +130,7 @@ export class PrivateKeyAccessService {
     const pending = this.pending.get(identity.telegramUserId);
     if (!pending) return { kind: "none" };
 
+    // Always consume the pending request (one-shot)
     this.pending.delete(identity.telegramUserId);
 
     if (new Date(pending.expiresAt).getTime() <= this.now().getTime()) {
@@ -129,6 +155,7 @@ export class PrivateKeyAccessService {
       return { kind: "canceled", reason: "not_found" };
     }
 
+    // ─── Code correct & wallet found → reveal private key ──────────
     return {
       kind: "revealed",
       publicAddress: wallet.publicAddress,
@@ -137,6 +164,7 @@ export class PrivateKeyAccessService {
   }
 }
 
+// ─── Step 16e: Utility functions ───────────────────────────────────────
 function hashCode(code: string): string {
   return createHash("sha256").update(code).digest("hex");
 }

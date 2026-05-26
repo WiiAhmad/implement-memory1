@@ -1,25 +1,18 @@
-/**
- * State-manager wrapper for the offload module.
- *
- * Re-exports the library's OffloadStateManager and SessionRegistry classes
- * which handle per-session state management, tool pair buffering, MMD tracking,
- * and LRU-cached session routing.
- *
- * The OffloadStateManager's public API includes:
- *   - init(dataRoot, agentName, sessionId)  — initialize for a session
- *   - switchSession(sessionKey, dataRoot)   — switch to a different session
- *   - save()                                — persist state to disk
- *   - addToolPair(pair)                     — buffer a tool call/result pair
- *   - takePending(max)                      — consume buffered pairs for L1
- *   - getPendingCount() / hasPending()      — check buffer status
- *   - setActiveMmd(file, id)               — track current MMD
- *   - getActiveMmdFile() / getActiveMmdId() — get current MMD
- *
- * The SessionRegistry provides:
- *   - resolve(sessionKey)                   — get/create per-session manager
- *   - get(sessionKey)                       — look up existing session
- *   - LRU eviction (max 20 cached sessions)
- */
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 23]  OFFLOAD STATE MANAGER — Session State & Tool Pair Buffering
+//  ═══════════════════════════════════════════════════════════════════════
+//  Re-exports the library's OffloadStateManager and SessionRegistry classes.
+//
+//  OffloadStateManager handles:
+//    - Per-session state persistence (active MMD, counters, boundaries)
+//    - Tool pair buffering (addToolPair / takePending for L1 flush)
+//    - MMD lifecycle (setActiveMmd, getActiveMmdFile)
+//    - L2 scheduling state (lastL2TriggerTime)
+//
+//  SessionRegistry provides:
+//    - LRU-cached session resolution (max 20 cached sessions)
+//    - Automatic eviction of stale sessions
+// ═══════════════════════════════════════════════════════════════════════
 
 export {
   OffloadStateManager,

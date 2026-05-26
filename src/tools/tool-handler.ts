@@ -1,3 +1,17 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 28]  TOOL HANDLER — Memory Search Tools for LLM
+//  ═══════════════════════════════════════════════════════════════════════
+//  Manages tool definitions and execution for memory search tools.
+//  The LLM can call these tools during a conversation turn to proactively
+//  search the user's long-term memories (L1) and conversation history (L0).
+//
+//  Security: Tool execution is scoped to the current user's memory session,
+//  preventing cross-user data leakage even if the model fabricates a session key.
+//
+//  Rate limiting: tdai_memory_search + tdai_conversation_search share a
+//  combined limit of 3 calls per turn (configurable).
+// ═══════════════════════════════════════════════════════════════════════
+
 import type { TdaiCore } from "../../TencentDB-Agent-Memory/src/core/tdai-core.ts";
 import type { Logger } from "../../TencentDB-Agent-Memory/src/core/types.ts";
 
@@ -18,6 +32,8 @@ export type ToolExecutor = (
   userKey?: string,
 ) => Promise<string>;
 
+// ─── Step 28a: Tool definition: tdai_memory_search ─────────────────────
+//  Searches structured L1 memories (persona, episodic, instruction).
 const MEMORY_SEARCH_TOOL: ToolDefinition = {
   type: "function",
   function: {
@@ -31,31 +47,18 @@ const MEMORY_SEARCH_TOOL: ToolDefinition = {
     parameters: {
       type: "object",
       properties: {
-        query: {
-          type: "string",
-          description: "Search query describing what you want to recall about the user",
-        },
-        limit: {
-          type: "number",
-          description: "Maximum number of results to return (default: 5, max: 20)",
-        },
-        type: {
-          type: "string",
-          enum: ["persona", "episodic", "instruction"],
-          description:
-            "Optional filter by memory type: persona (identity/preferences), " +
-            "episodic (events/activities), instruction (user rules/commands)",
-        },
-        scene: {
-          type: "string",
-          description: "Optional filter by scene name",
-        },
+        query: { type: "string", description: "Search query describing what you want to recall about the user" },
+        limit: { type: "number", description: "Maximum number of results to return (default: 5, max: 20)" },
+        type: { type: "string", enum: ["persona", "episodic", "instruction"], description: "Optional filter by memory type" },
+        scene: { type: "string", description: "Optional filter by scene name" },
       },
       required: ["query"],
     },
   },
 };
 
+// ─── Step 28b: Tool definition: tdai_conversation_search ───────────────
+//  Searches raw L0 conversation history (full dialogue records).
 const CONVERSATION_SEARCH_TOOL: ToolDefinition = {
   type: "function",
   function: {
@@ -69,14 +72,8 @@ const CONVERSATION_SEARCH_TOOL: ToolDefinition = {
     parameters: {
       type: "object",
       properties: {
-        query: {
-          type: "string",
-          description: "Search query describing what conversation content you want to find",
-        },
-        limit: {
-          type: "number",
-          description: "Maximum number of messages to return (default: 5, max: 20)",
-        },
+        query: { type: "string", description: "Search query describing what conversation content you want to find" },
+        limit: { type: "number", description: "Maximum number of messages to return (default: 5, max: 20)" },
       },
       required: ["query"],
     },
@@ -86,13 +83,7 @@ const CONVERSATION_SEARCH_TOOL: ToolDefinition = {
 /** All available memory tools the LLM can call. */
 export const MEMORY_TOOLS: ToolDefinition[] = [MEMORY_SEARCH_TOOL, CONVERSATION_SEARCH_TOOL];
 
-/**
- * Manages tool definitions and execution for memory search tools.
- *
- * Tool execution is explicitly scoped to the current Telegram memory session.
- * This prevents one user from searching another user's L0/L1 records, even if
- * the model tries to provide a different session key in tool arguments.
- */
+// ─── Step 28c: ToolHandler class ──────────────────────────────────────
 export class ToolHandler {
   private readonly callCountsByUserKey = new Map<string, number>();
   private readonly maxCallsPerTurn: number;
@@ -105,21 +96,16 @@ export class ToolHandler {
     this.maxCallsPerTurn = opts.maxCallsPerTurn ?? 3;
   }
 
-  /** OpenAI-compatible tool definitions for sending in the API request. */
   get toolDefinitions(): ToolDefinition[] {
     return MEMORY_TOOLS;
   }
 
-  /**
-   * Execute a tool by name with the given arguments and current user scope.
-   * Returns a formatted string result for the LLM.
-   */
+  // ─── Step 28d: Execute a tool by name ──────────────────────────────
+  //  Checks call limit first, then routes to the correct handler.
   async executeTool(name: string, args: Record<string, unknown>, userKey: string): Promise<string> {
     const callCount = this.callCountsByUserKey.get(userKey) ?? 0;
     if (callCount >= this.maxCallsPerTurn) {
-      this.logger.warn(
-        `[tool-handler] Tool call rejected: ${name} for ${userKey} - limit of ${this.maxCallsPerTurn} per turn reached`,
-      );
+      this.logger.warn(`[tool-handler] Tool call rejected: ${name} for ${userKey} - limit of ${this.maxCallsPerTurn} per turn reached`);
       return "Tool call limit reached (max 3 per turn). Please respond with the information you already have.";
     }
     this.callCountsByUserKey.set(userKey, callCount + 1);
@@ -144,10 +130,8 @@ export class ToolHandler {
     this.callCountsByUserKey.clear();
   }
 
-  private async executeMemorySearch(
-    args: Record<string, unknown>,
-    userKey: string,
-  ): Promise<string> {
+  // ─── Step 28e: Execute tdai_memory_search ──────────────────────────
+  private async executeMemorySearch(args: Record<string, unknown>, userKey: string): Promise<string> {
     const query = String(args.query ?? "");
     const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
     const typeFilter = typeof args.type === "string" ? args.type : undefined;
@@ -159,16 +143,8 @@ export class ToolHandler {
     );
 
     try {
-      const result = await this.core.searchMemories({
-        query,
-        limit,
-        type: typeFilter,
-        scene: sceneFilter,
-        sessionKey: userKey,
-      });
-      this.logger.info(
-        `[tool-handler] tdai_memory_search: ${result.total} results (strategy=${result.strategy})`,
-      );
+      const result = await this.core.searchMemories({ query, limit, type: typeFilter, scene: sceneFilter, sessionKey: userKey });
+      this.logger.info(`[tool-handler] tdai_memory_search: ${result.total} results (strategy=${result.strategy})`);
       return result.text;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -177,22 +153,16 @@ export class ToolHandler {
     }
   }
 
-  private async executeConversationSearch(
-    args: Record<string, unknown>,
-    userKey: string,
-  ): Promise<string> {
+  // ─── Step 28f: Execute tdai_conversation_search ─────────────────────
+  private async executeConversationSearch(args: Record<string, unknown>, userKey: string): Promise<string> {
     const query = String(args.query ?? "");
     const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
 
-    this.logger.info(
-      `[tool-handler] tdai_conversation_search: userKey=${userKey}, query="${query.slice(0, 80)}", limit=${limit}`,
-    );
+    this.logger.info(`[tool-handler] tdai_conversation_search: userKey=${userKey}, query="${query.slice(0, 80)}", limit=${limit}`);
 
     try {
       const result = await this.core.searchConversations({ query, limit, sessionKey: userKey });
-      this.logger.info(
-        `[tool-handler] tdai_conversation_search: ${result.total} results`,
-      );
+      this.logger.info(`[tool-handler] tdai_conversation_search: ${result.total} results`);
       return result.text;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

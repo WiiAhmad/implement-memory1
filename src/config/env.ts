@@ -1,5 +1,19 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 3]  CONFIG — Environment Variable Parsing (Zod)
+//  ═══════════════════════════════════════════════════════════════════════
+//  All environment variables are parsed & validated here using Zod schemas.
+//  Called by main.ts → parseEnv(process.env) at startup.
+//  Every configurable value for the Telegram bot lives in this file.
+// ═══════════════════════════════════════════════════════════════════════
+
 import { z } from "zod";
 
+// ─── Step 3a: Define the Zod validation schema ─────────────────────────
+//  Each env var has: min length, default value, type coercion, or enum.
+//  Keys are uppercase with underscores to match .env conventions.
+//  Core vars are required (BOT_TOKEN, OPENAI_API_KEY, MODEL, etc).
+//  Memory vars control TDAI engine behavior (capture, extraction, recall).
+//  Offload vars control context compression (L1, L1.5, L2, thresholds).
 const EnvSchema = z.object({
   // ── Core ────────────────────────────────────────────────────────────────
   BOT_TOKEN: z.string().min(1),
@@ -8,6 +22,7 @@ const EnvSchema = z.object({
   OPENAI_API_KEY: z.string().min(1),
   BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   MODEL: z.string().min(1),
+  CHAT_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
   EMBEDDING_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   EMBEDDING_API_KEY: z.string().min(1),
   EMBEDDING_MODEL: z.string().min(1),
@@ -46,6 +61,7 @@ const EnvSchema = z.object({
   MEMORY_PERSONA_MAX_SCENES: z.coerce.number().int().positive().default(20),
   MEMORY_PERSONA_BACKUP_COUNT: z.coerce.number().int().min(0).default(3),
   MEMORY_PERSONA_SCENE_BACKUP: z.coerce.number().int().min(0).default(10),
+  MEMORY_SCENE_EXTRACTION_TIMEOUT_MS: z.coerce.number().int().positive().default(300_000),
 
   // Pipeline
   MEMORY_PIPELINE_EVERY_N: z.coerce.number().int().positive().default(10),
@@ -128,6 +144,9 @@ const EnvSchema = z.object({
   OFFLOAD_L2_TIMEOUT_SECONDS: z.coerce.number().int().min(0).default(300),
 });
 
+// ─── Step 3b: TypeScript interfaces for parsed config ──────────────────
+//  These mirror the Zod schema but use camelCase for runtime use.
+//  Nested groups: embedding, memory, offload.
 export interface AppEnv {
   botToken: string;
   memoryRoot: string;
@@ -135,6 +154,7 @@ export interface AppEnv {
   openAIApiKey: string;
   baseUrl: string;
   model: string;
+  chatTimeoutMs: number;
   embedding: {
     baseUrl: string;
     apiKey: string;
@@ -156,6 +176,7 @@ export interface AppEnv {
     personaMaxScenes: number;
     personaBackupCount: number;
     personaSceneBackupCount: number;
+    sceneExtractionTimeoutMs: number;
     pipelineEveryNConversations: number;
     pipelineWarmup: boolean;
     l1IdleTimeoutSeconds: number;
@@ -204,6 +225,9 @@ export interface AppEnv {
   };
 }
 
+// ─── Step 3c: Parse & map raw env vars → typed AppEnv object ──────────
+//  Called once at startup. Validates all env vars, then maps the Zod
+//  output (snake_case keys) to the AppEnv shape (camelCase groups).
 export function parseEnv(input: Record<string, string | undefined>): AppEnv {
   const parsed = EnvSchema.parse(input);
 
@@ -214,6 +238,7 @@ export function parseEnv(input: Record<string, string | undefined>): AppEnv {
     openAIApiKey: parsed.OPENAI_API_KEY,
     baseUrl: parsed.BASE_URL,
     model: parsed.MODEL,
+    chatTimeoutMs: parsed.CHAT_TIMEOUT_MS,
     embedding: {
       baseUrl: parsed.EMBEDDING_BASE_URL,
       apiKey: parsed.EMBEDDING_API_KEY,
@@ -234,6 +259,7 @@ export function parseEnv(input: Record<string, string | undefined>): AppEnv {
       personaMaxScenes: parsed.MEMORY_PERSONA_MAX_SCENES,
       personaBackupCount: parsed.MEMORY_PERSONA_BACKUP_COUNT,
       personaSceneBackupCount: parsed.MEMORY_PERSONA_SCENE_BACKUP,
+      sceneExtractionTimeoutMs: parsed.MEMORY_SCENE_EXTRACTION_TIMEOUT_MS,
       pipelineEveryNConversations: parsed.MEMORY_PIPELINE_EVERY_N,
       pipelineWarmup: parsed.MEMORY_PIPELINE_WARMUP,
       l1IdleTimeoutSeconds: parsed.MEMORY_L1_IDLE_TIMEOUT,

@@ -1,15 +1,15 @@
-/**
- * Storage wrapper for the offload module.
- *
- * Provides:
- * 1. Session key mapping: "tg:user:{id}" → "agent:telegram-bot:{id}"
- * 2. Re-exports all library storage functions used by the bot
- * 3. Thin convenience wrappers where needed
- */
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 21]  OFFLOAD STORAGE — Session Key Mapping & Library Re-exports
+//  ═══════════════════════════════════════════════════════════════════════
+//  Provides:
+//  1. Session key mapping: "tg:user:{id}" → "agent:telegram-bot:{id}"
+//  2. Re-exports all library storage functions used by OffloadService
+//  3. Thin convenience wrappers where needed
+// ═══════════════════════════════════════════════════════════════════════
+
 import type { PluginLogger, OffloadEntry } from "./types.ts";
 
-// ─── Library imports ────────────────────────────────────────────────────
-
+// ─── Step 21a: Re-export all library storage functions ─────────────────
 export {
   createStorageContext,
   readOffloadEntries,
@@ -33,35 +33,21 @@ export {
 
 export type { StorageContext } from "../../TencentDB-Agent-Memory/src/offload/storage.ts";
 
-// ─── Agent name constant ────────────────────────────────────────────────
-
-/**
- * The agent name used in offload session keys.
- * This creates a dedicated subdirectory under the offload data root.
- */
+// ─── Step 21b: Agent name constant ────────────────────────────────────
+//  Creates a dedicated subdirectory under the offload data root.
 export const AGENT_NAME = "telegram-bot";
 
-// ─── Session Key Mapping ────────────────────────────────────────────────
-
-/**
- * Convert a Telegram session key (e.g., "tg:user:12345") to the offload
- * module's expected format ("agent:telegram-bot:12345").
- *
- * The offload library's parseSessionKey() expects:
- *   "agent:<agent-name>:<session-id>"
- */
+// ─── Step 21c: Convert Telegram session key → offload module format ───
+//  The TDAI offload library expects "agent:<agent-name>:<session-id>".
+//  Converts "tg:user:12345" to "agent:telegram-bot:12345".
 export function toOffloadSessionKey(tgKey: string): string {
-  // tg:user:12345 → extract userId portion after "tg:user:"
-  // Also handles "tg:user:abc" and similar formats
   const colonIdx = tgKey.indexOf(":");
   if (colonIdx === -1) {
-    // Not a valid tg key format — wrap as-is
     return `agent:${AGENT_NAME}:${tgKey}`;
   }
 
   const secondColonIdx = tgKey.indexOf(":", colonIdx + 1);
   if (secondColonIdx === -1) {
-    // Only one colon — treat remaining as sessionId
     const sessionId = tgKey.slice(colonIdx + 1);
     return `agent:${AGENT_NAME}:${sessionId}`;
   }
@@ -71,14 +57,7 @@ export function toOffloadSessionKey(tgKey: string): string {
   return `agent:${AGENT_NAME}:${sessionId}`;
 }
 
-/**
- * Resolve a Telegram session key to parsed offload agent name and session ID.
- * Returns null if the key format is invalid.
- *
- * Parses "agent:<agent-name>:<session-id>" format produced by toOffloadSessionKey().
- * This is a standalone implementation to avoid re-export issues with the library's
- * module (which uses .js extension imports internally).
- */
+// ─── Step 21d: Parse a Telegram key into offload agent + session ID ───
 export function resolveSessionKey(
   tgKey: string,
 ): { agentName: string; sessionId: string } | null {
@@ -90,9 +69,7 @@ export function resolveSessionKey(
   return { agentName: parts[1], sessionId };
 }
 
-/**
- * Get the agent name for the Telegram bot.
- */
+/** Get the agent name for the Telegram bot. */
 export function getAgentName(): string {
   return AGENT_NAME;
 }

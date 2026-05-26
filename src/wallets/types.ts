@@ -1,23 +1,34 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 12]  WALLET TYPES — Type Definitions for Wallet Operations
+//  ═══════════════════════════════════════════════════════════════════════
+//  Defines all types used across the wallet ecosystem: generation, storage,
+//  activation, deletion, and private key access.
+// ═══════════════════════════════════════════════════════════════════════
+
+// ─── Step 12a: Raw generated wallet (Solana) ──────────────────────────
 export interface GeneratedWallet {
-  mnemonic: string;
-  privateKey: string;
-  publicAddress: string;
+  mnemonic: string;       // BIP39 mnemonic phrase
+  privateKey: string;     // Base58-encoded private key
+  publicAddress: string;  // Solana public address (Base58)
 }
 
+// ─── Step 12b: Wallet record stored in SQLite ─────────────────────────
 export interface WalletRecord extends GeneratedWallet {
-  telegramUserId: string;
-  createdAt: string;
-  isActive: boolean;
+  telegramUserId: string;  // Owner's Telegram user ID
+  createdAt: string;       // ISO timestamp of creation
+  isActive: boolean;       // Whether this is the user's active wallet
 }
 
+// ─── Step 12c: Wallet record WITH database ID (for internal queries) ──
 export interface StoredWalletRecord extends WalletRecord {
   id: number;
 }
 
+// ─── Step 12d: Result types for wallet operations ─────────────────────
 export interface WalletCreationResult {
   kind: "created";
   publicAddress: string;
-  backupSaved: boolean;
+  backupSaved: boolean;  // Whether backup DB write succeeded
 }
 
 export interface WalletPublicRecord {
@@ -35,6 +46,7 @@ export type WalletDeletionResult =
 
 export type WalletGenerationLimitResult = { kind: "limit_reached"; limit: number };
 
+// ─── Step 12e: Private key access types ───────────────────────────────
 export interface TelegramIdentity {
   telegramUserId: string;
   username: string | null;

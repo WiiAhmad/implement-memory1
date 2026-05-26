@@ -1,3 +1,11 @@
+// ═══════════════════════════════════════════════════════════════════════
+//  [Step 7]  JSONL FILE LOGGER — Structured JSON Lines to Disk
+//  ═══════════════════════════════════════════════════════════════════════
+//  Writes structured JSON log entries to a .jsonl file (one JSON object per line).
+//  Features: date-based file rotation, size-based rotation, safe file I/O.
+//  Format per line: {"ts":"2026-05-26T12:34:56.789Z","level":"INFO","msg":"...","pid":1234}
+// ═══════════════════════════════════════════════════════════════════════
+
 import fs from "node:fs";
 import path from "node:path";
 import type { Logger } from "../../TencentDB-Agent-Memory/src/core/types.ts";
@@ -33,6 +41,7 @@ function todayDateStr(): string {
  * its own file.
  */
 export function createJsonlLogger(opts: JsonlLoggerOptions): Logger & { close(): Promise<void> } {
+  // ─── Step 7a: Initialize config from options ──────────────────────────
   const logsDir = opts.logsDir;
   const maxSize = opts.maxSizeBytes ?? 10 * 1024 * 1024; // 10 MB default
   const useDateRotation = !opts.fileName; // default naming = auto date-based rotation
@@ -41,6 +50,7 @@ export function createJsonlLogger(opts: JsonlLoggerOptions): Logger & { close():
   // Ensure logs directory exists
   fs.mkdirSync(logsDir, { recursive: true });
 
+  // ─── Step 7b: Internal state (file descriptor, size, date tracking) ───
   let fd: number | null = null;
   let currentSize = 0;
   let currentDateStr = useDateRotation ? todayDateStr() : "";
@@ -56,10 +66,8 @@ export function createJsonlLogger(opts: JsonlLoggerOptions): Logger & { close():
     return path.join(logsDir, getCurrentFileName());
   }
 
-  /**
-   * If the date has changed since the last write, close the old fd
-   * and switch to a new dated file.
-   */
+  // ─── Step 7c: Date-based rotation check ──────────────────────────────
+  //  If the date changed since last write, close old fd and switch to new dated file.
   function checkDateRotation(): void {
     if (!useDateRotation || fd === null) return;
     const newDate = todayDateStr();
@@ -73,6 +81,7 @@ export function createJsonlLogger(opts: JsonlLoggerOptions): Logger & { close():
     // openFd() will open the new day's file
   }
 
+  // ─── Step 7d: Open (or re-open) file descriptor ──────────────────────
   function openFd(): void {
     checkDateRotation();
     if (fd !== null) return;
@@ -91,6 +100,7 @@ export function createJsonlLogger(opts: JsonlLoggerOptions): Logger & { close():
     }
   }
 
+  // ─── Step 7e: Size-based rotation (rename to .1.jsonl) ──────────────
   function rotateIfNeeded(): void {
     if (maxSize <= 0 || fd === null) return;
     if (currentSize < maxSize) return;
@@ -118,6 +128,11 @@ export function createJsonlLogger(opts: JsonlLoggerOptions): Logger & { close():
     }
   }
 
+  // ─── Step 7f: Core write function ─────────────────────────────────────
+  //  1. Open fd if needed
+  //  2. Build JSON line with timestamp, level, message, PID
+  //  3. Rotate if over max size
+  //  4. Write sync to disk
   function write(level: string, message: string): void {
     openFd();
     if (fd === null) return;
@@ -142,10 +157,7 @@ export function createJsonlLogger(opts: JsonlLoggerOptions): Logger & { close():
     }
   }
 
-  /**
-   * Flush any pending data and close the underlying file descriptor.
-   * Safe to call multiple times — subsequent calls are no-ops.
-   */
+  // ─── Step 7g: Flush and close file descriptor ───────────────────────
   async function close(): Promise<void> {
     if (fd === null) return;
     try {
